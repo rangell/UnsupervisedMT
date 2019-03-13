@@ -9,10 +9,13 @@ import os
 from logging import getLogger
 import torch
 
-from ..utils import create_word_masks
-from .dataset import MonolingualDataset, ParallelDataset
+from ..utils import create_word_masks, create_st_word_masks
+from .dataset import MonolingualDataset, ParallelDataset, StyleDataset
 from .dictionary import EOS_WORD, PAD_WORD, UNK_WORD, SPECIAL_WORD, SPECIAL_WORDS
 
+from IPython import embed
+import json
+import pandas as pd
 
 logger = getLogger()
 
@@ -94,6 +97,44 @@ def load_vocab(params, data):
     logger.info('')
 
 
+def load_st_vocab(params, data):
+    """
+    Load vocabulary files.
+    """
+    if not hasattr(params, 'vocab_filename'):
+        assert getattr(params, 'vocab_min_count', 0) == 0
+        return
+
+    def read_vocab(path, min_count):
+        assert os.path.isfile(path)
+        vocab = set()
+        with open(path, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                line = line.rstrip().split()
+                if not len(line) == 2:
+                    assert len(line) == 1
+                    logger.warning("Incorrect vocabulary word in line %i!" % i)
+                    continue
+                count = int(line[1])
+                assert count > 0
+                if count < min_count:
+                    break
+                vocab.add(line[0])
+        return vocab
+
+    data['vocab'] = read_vocab(params.vocab_filename, params.vocab_min_count)
+
+    # check vocabulary words
+    for w in data['vocab']:
+        if w not in data['dico']:
+            logger.warning("\"%s\" not found in the vocabulary!" % w)
+
+    logger.info("Loaded %i words from the vocabulary."
+                % (len(data['vocab'])))
+
+    logger.info('')
+
+
 def set_parameters(params, dico):
     """
     Define parameters / check dictionaries.
@@ -138,6 +179,10 @@ def check_dictionaries(params, data):
     assert (not getattr(params, 'share_lang_emb', False) or
             all(data['dico'][params.langs[0]] == data['dico'][params.langs[i]]
                 for i in range(1, params.n_langs)))
+
+
+def check_st_dictionary(params, data):
+    pass
 
 
 def load_para_data(params, data):
@@ -304,10 +349,119 @@ def load_mono_data(params, data):
     logger.info('')
 
 
+def set_st_parameters(params, dico):
+    """
+    Define parameters / check dictionaries.
+    """
+    eos_index = dico.index(EOS_WORD)
+    pad_index = dico.index(PAD_WORD)
+    unk_index = dico.index(UNK_WORD)
+    blank_index = dico.index(SPECIAL_WORD % 0)
+    bos_index = -1
+    if hasattr(params, 'eos_index'):
+        assert params.eos_index == eos_index
+        assert params.pad_index == pad_index
+        assert params.unk_index == unk_index
+        assert params.blank_index == blank_index
+        assert params.bos_index == bos_index
+    else:
+        params.eos_index = eos_index
+        params.pad_index = pad_index
+        params.unk_index = unk_index
+        params.blank_index = blank_index
+        params.bos_index = bos_index
+
+
+def load_attributes(path, params):
+    attr_df = pd.read_csv(path, header=None)
+    attr_df = attr_df.applymap(lambda x : params.style2id[x])
+    return attr_df.values
+
+
+def load_st_data(params):
+    """
+    Load style transfer data.
+    The returned dictionary contains:
+        - dico (dictionary)
+        - vocab (vocabulary)
+        - splits (dictionary of datasets (train, valid, test))
+    """
+    data = {'dico': None, 'vocab': None, 'splits': {}}
+
+    _prefixes = [params.train_prefix, params.dev_prefix, params.test_prefix]
+
+    for name, prefix in zip(['train', 'dev', 'test'], _prefixes):
+        text_path = ".".join([prefix, params.text_suffix])
+        text_data = load_binarized(text_path, params)
+
+        if not data['dico']:
+            data['dico'] = text_data['dico']
+        else:
+            assert data['dico'] == text_data['dico']
+
+        set_st_parameters(params, text_data['dico'])
+
+        attribute_path = ".".join([prefix, params.attribute_suffix])
+        attribute_data = load_attributes(attribute_path, params)
+
+        dataset = StyleDataset(text_data['sentences'], text_data['positions'],
+                               text_data['dico'], attribute_data, params)
+
+        # remove too long sentences (train / valid only, test must remain unchanged)
+        if name != 'test':
+            dataset.remove_long_sentences(params.max_len)
+
+        data['splits'][name] = dataset
+
+    # update parameters
+    params.n_words = len(data['dico'])
+
+    # vocabulary
+    load_st_vocab(params, data)
+    create_st_word_masks(params, data)
+
+    print('Got here!')
+    exit()
+
+    # vocabulary
+    load_vocab(params, data)
+    create_word_masks(params, data)
+
+    # data summary
+
+
 def check_all_data_params(params):
     """
     Check datasets parameters.
     """
+
+    # make sure dataset files exist
+    for suffix in [params.text_suffix, params.attribute_suffix]:
+        for prefix in [params.train_prefix, params.dev_prefix, params.test_prefix]:
+            assert os.path.isfile(".".join([prefix, suffix]))
+
+    # make sure vocab file exists
+    assert os.path.isfile(params.vocab_filename)
+
+    # check params related to training 
+    assert params.max_len > 0
+    assert params.max_vocab == -1 or params.max_vocab > 0
+    assert params.word_shuffle == 0 or params.word_shuffle > 1
+    assert 0 <= params.word_dropout < 1
+    assert 0 <= params.word_blank < 1
+
+    # check styles
+    assert os.path.isfile(params.metadata_filename)
+    params.style_metadata = json.load(open(params.metadata_filename, 'r'))
+    params.styles = []
+    for attr_dict in params.style_metadata['attributes']:
+        params.styles += attr_dict[list(attr_dict.keys())[0]]
+    params.num_styles = len(params.styles)
+    params.id2style = {k : v for k, v in enumerate(params.styles)}
+    params.style2id = {k : v for v, k in params.id2style.items()}
+
+    return
+
     # check languages
     params.langs = params.langs.split(',')
     assert len(params.langs) == len(set(params.langs)) >= 2
