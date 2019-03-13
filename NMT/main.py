@@ -9,7 +9,7 @@ import time
 import json
 import argparse
 
-from src.data.loader import check_all_data_params, load_data
+from src.data.loader import check_all_data_params, load_data, load_st_data
 from src.utils import bool_flag, initialize_exp
 from src.model import check_mt_model_params, build_mt_model
 from src.trainer import TrainerMT
@@ -110,29 +110,43 @@ def get_parser():
                         help="GAN smooth predictions")
     parser.add_argument("--dis_input_proj", type=bool_flag, default=True,
                         help="Feed the discriminator with the projected output (attention only)")
+
     # dataset
-    parser.add_argument("--langs", type=str, default="",
-                        help="Languages (lang1,lang2)")
-    parser.add_argument("--vocab", type=str, default="",
-                        help="Vocabulary (lang1:path1;lang2:path2)")
+    parser.add_argument("--text_suffix", type=str, default="",
+                        help="Text file suffix")
+    parser.add_argument("--attribute_suffix", type=str, default="",
+                        help="Attribute (styles) file suffix")
+    parser.add_argument("--train_prefix", type=str, default="",
+                        help="Train prefix, expected with test and attribute suffixes.")
+    parser.add_argument("--dev_prefix", type=str, default="",
+                        help="Dev prefix, expected with test and attribute suffixes.")
+    parser.add_argument("--test_prefix", type=str, default="",
+                        help="Test prefix, expected with test and attribute suffixes.")
+    #parser.add_argument("--langs", type=str, default="",
+    #                    help="Languages (lang1,lang2)")
+    parser.add_argument("--vocab_filename", type=str, default="",
+                        help="Vocabulary filename")
     parser.add_argument("--vocab_min_count", type=int, default=0,
                         help="Vocabulary minimum word count")
-    parser.add_argument("--mono_dataset", type=str, default="",
-                        help="Monolingual dataset (lang1:train1,valid1,test1;lang2:train2,valid2,test2)")
-    parser.add_argument("--para_dataset", type=str, default="",
-                        help="Parallel dataset (lang1-lang2:train12,valid12,test12;lang1-lang3:train13,valid13,test13)")
-    parser.add_argument("--back_dataset", type=str, default="",
-                        help="Back-parallel dataset, with noisy source and clean target (lang1-lang2:train121,train122;lang2-lang1:train212,train211)")
-    parser.add_argument("--n_mono", type=int, default=0,
-                        help="Number of monolingual sentences (-1 for everything)")
-    parser.add_argument("--n_para", type=int, default=0,
-                        help="Number of parallel sentences (-1 for everything)")
-    parser.add_argument("--n_back", type=int, default=0,
-                        help="Number of back-parallel sentences (-1 for everything)")
+    #parser.add_argument("--mono_dataset", type=str, default="",
+    #                    help="Monolingual dataset (lang1:train1,valid1,test1;lang2:train2,valid2,test2)")
+    #parser.add_argument("--para_dataset", type=str, default="",
+    #                    help="Parallel dataset (lang1-lang2:train12,valid12,test12;lang1-lang3:train13,valid13,test13)")
+    #parser.add_argument("--back_dataset", type=str, default="",
+    #                    help="Back-parallel dataset, with noisy source and clean target (lang1-lang2:train121,train122;lang2-lang1:train212,train211)")
+    #parser.add_argument("--n_mono", type=int, default=0,
+    #                    help="Number of monolingual sentences (-1 for everything)")
+    #parser.add_argument("--n_para", type=int, default=0,
+    #                    help="Number of parallel sentences (-1 for everything)")
+    #parser.add_argument("--n_back", type=int, default=0,
+    #                    help="Number of back-parallel sentences (-1 for everything)")
     parser.add_argument("--max_len", type=int, default=175,
                         help="Maximum length of sentences (after BPE)")
     parser.add_argument("--max_vocab", type=int, default=-1,
                         help="Maximum vocabulary size (-1 to disable)")
+    parser.add_argument("--metadata_filename", type=str, default="",
+                        help="Metadata filename")
+
     # training steps
     parser.add_argument("--n_dis", type=int, default=0,
                         help="Number of discriminator training iterations")
@@ -236,9 +250,18 @@ def main(params):
     check_all_data_params(params)
     check_mt_model_params(params)
 
+    print("Done checking params!")
+
+    # initialize experiment / load data / build model
+    logger = initialize_exp(params)
+    data = load_st_data(params)
+
+    exit()
+
     # initialize experiment / load data / build model
     logger = initialize_exp(params)
     data = load_data(params)
+
     encoder, decoder, discriminator, lm = build_mt_model(params, data)
 
     # initialize trainer / reload checkpoint / initialize evaluator
