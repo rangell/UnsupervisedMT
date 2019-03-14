@@ -369,3 +369,20 @@ def create_word_masks(params, data):
         mask_neg = [i for i in range(n_words) if i not in mask_pos]
         params.vocab_mask_pos.append(torch.LongTensor(sorted(mask_pos)))
         params.vocab_mask_neg.append(torch.LongTensor(sorted(mask_neg)))
+
+
+def create_st_word_masks(params, data):
+    """
+    Create masks for allowed / forbidden output words.
+    """
+    if not hasattr(params, 'vocab') or len(params.vocab) == 0:
+        return
+    params.vocab_mask_pos = []
+    params.vocab_mask_neg = []
+    dico = data['dico']
+    vocab = data['vocab']
+    words = [EOS_WORD, UNK_WORD] + list(vocab)
+    mask_pos = set([dico.index(w) for w in words])
+    mask_neg = [i for i in range(params.n_words) if i not in mask_pos]
+    params.vocab_mask_pos.append(torch.LongTensor(sorted(mask_pos)))
+    params.vocab_mask_neg.append(torch.LongTensor(sorted(mask_neg)))

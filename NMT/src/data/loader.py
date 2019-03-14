@@ -420,14 +420,7 @@ def load_st_data(params):
     load_st_vocab(params, data)
     create_st_word_masks(params, data)
 
-    print('Got here!')
-    exit()
-
-    # vocabulary
-    load_vocab(params, data)
-    create_word_masks(params, data)
-
-    # data summary
+    return data
 
 
 def check_all_data_params(params):
