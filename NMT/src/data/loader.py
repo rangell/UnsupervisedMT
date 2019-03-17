@@ -16,6 +16,8 @@ from .dictionary import EOS_WORD, PAD_WORD, UNK_WORD, SPECIAL_WORD, SPECIAL_WORD
 from IPython import embed
 import json
 import pandas as pd
+from functools import reduce
+from operator import mul
 
 logger = getLogger()
 
@@ -357,7 +359,7 @@ def set_st_parameters(params, dico):
     pad_index = dico.index(PAD_WORD)
     unk_index = dico.index(UNK_WORD)
     blank_index = dico.index(SPECIAL_WORD % 0)
-    bos_index = -1
+    bos_index = dico.index(SPECIAL_WORD % 1)
     if hasattr(params, 'eos_index'):
         assert params.eos_index == eos_index
         assert params.pad_index == pad_index
@@ -418,7 +420,6 @@ def load_st_data(params):
 
     # vocabulary
     load_st_vocab(params, data)
-    create_st_word_masks(params, data)
 
     return data
 
@@ -449,9 +450,25 @@ def check_all_data_params(params):
     params.styles = []
     for attr_dict in params.style_metadata['attributes']:
         params.styles += attr_dict[list(attr_dict.keys())[0]]
-    params.num_styles = len(params.styles)
+    params.n_styles = len(params.styles)
     params.id2style = {k : v for k, v in enumerate(params.styles)}
     params.style2id = {k : v for v, k in params.id2style.items()}
+
+    # style sampling variables
+    params.modulo_constants = []
+    for attribute_dict in params.style_metadata['attributes']:
+        key = list(attribute_dict.keys())[0]
+        params.modulo_constants.append(len(attribute_dict[key]))
+    params.n_attributes = len(params.modulo_constants)
+    params.n_uniq_styles = reduce(mul, params.modulo_constants, 1)
+    params.start_indices = [sum(params.modulo_constants[:i]) 
+                                for i in range(params.n_attributes)]
+    params.integer_divisors = [reduce(mul, params.modulo_constants[:i], 1)
+                                    for i in range(params.n_attributes)]
+
+    params.modulo_constants = torch.LongTensor(params.modulo_constants)
+    params.start_indices = torch.LongTensor(params.start_indices)
+    params.integer_divisors = torch.LongTensor(params.integer_divisors)
 
     return
 

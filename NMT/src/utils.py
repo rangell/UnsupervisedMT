@@ -22,6 +22,7 @@ from .logger import create_logger
 from .data.dictionary import EOS_WORD, UNK_WORD
 from .adam_inverse_sqrt_with_warmup import AdamInverseSqrtWithWarmup
 
+from IPython import embed
 
 logger = getLogger()
 
@@ -344,6 +345,28 @@ def reverse_sentences(batch, lengths):
     return new_batch
 
 
+def sample_style(params, curr_styles):
+    """
+    Sample random style.
+    """
+    print('Inside sample_style(...)')
+
+    modulo_constants = params.modulo_constants.repeat(curr_styles.shape[0], 1)
+    start_indices = params.start_indices.repeat(curr_styles.shape[0], 1)
+    integer_divisors = params.integer_divisors.repeat(curr_styles.shape[0], 1)
+
+    _curr_styles = curr_styles - start_indices
+    int_style_rep = torch.sum(_curr_styles * integer_divisors, dim=1)
+    rand_ints = (((params.n_styles - 1) * torch.rand(int_style_rep.shape)) + 1)
+    rand_ints = rand_ints.type(torch.LongTensor)
+    new_int_reps = torch.fmod(int_style_rep + rand_ints, params.n_uniq_styles)
+    new_int_reps = new_int_reps.reshape(-1, 1).expand(-1, params.n_attributes)
+    new_styles = torch.fmod(new_int_reps / integer_divisors, modulo_constants) 
+    new_styles += start_indices
+
+    return new_styles
+
+
 def restore_segmentation(path):
     """
     Take a file segmented with BPE and restore it to its original segmentation.
@@ -377,6 +400,10 @@ def create_st_word_masks(params, data):
     """
     if not hasattr(params, 'vocab') or len(params.vocab) == 0:
         return
+
+    print('Hello world!')
+    exit()
+
     params.vocab_mask_pos = []
     params.vocab_mask_neg = []
     dico = data['dico']

@@ -45,7 +45,8 @@ class SequenceGenerator(object):
         self.decoder.cuda()
         return self
 
-    def generate(self, src_lengths, encoded, lang_id, beam_size=None, maxlen=None, prefix_tokens=None):
+    def generate(self, src_lengths, encoded, tgt_attributes, beam_size=None,
+                 maxlen=None, prefix_tokens=None):
         """Generate a batch of translations."""
         bsz = src_lengths.size(0)
         maxlen = min(maxlen, self.maxlen) if maxlen is not None else self.maxlen
@@ -194,7 +195,7 @@ class SequenceGenerator(object):
                 self.decoder.reorder_incremental_state_(incremental_state, reorder_state)
                 self.decoder.reorder_encoder_out_(encoded.dec_input, reorder_state)
 
-            probs = self._decode(tokens[:, :step + 1].t(), encoded, lang_id, incremental_state)
+            probs = self._decode(tokens[:, :step + 1].t(), encoded, tgt_attributes, incremental_state)
             if step == 0:
                 # at the first step all hypotheses are equally likely, so use
                 # only the first beam
@@ -390,8 +391,9 @@ class SequenceGenerator(object):
 
         return finalized
 
-    def _decode(self, tokens, encoded, lang_id, incremental_state):
-        decoder_out = self.decoder(encoded, tokens, lang_id, incremental_state=incremental_state)
+    def _decode(self, tokens, encoded, tgt_attributes, incremental_state):
+        decoder_out = self.decoder(encoded, tokens, tgt_attributes,
+                                   incremental_state=incremental_state)
         decoder_out = decoder_out[-1, :, :]  # T x B x C -> B x C
         probs = F.log_softmax(decoder_out, dim=-1).data
         return probs.contiguous()

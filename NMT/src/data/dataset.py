@@ -268,6 +268,12 @@ class ParallelDataset(Dataset):
 class StyleDataset(object):
 
     def __init__(self, sent, pos, dico, attr, params):
+        self.eos_index = params.eos_index
+        self.pad_index = params.pad_index
+        self.unk_index = params.unk_index
+        self.bos_index = params.bos_index
+        self.batch_size = params.batch_size
+
         self.sent = sent
         self.pos = pos
         self.dico = dico
@@ -337,12 +343,11 @@ class StyleDataset(object):
         a tensor of size (s_len, n) where s_len is the length of the longest
         sentence, and a vector lengths containing the length of each sentence.
         """
-        assert type(lang_id) is int
         lengths = torch.LongTensor([len(s) + 2 for s in sentences])
         sent = torch.LongTensor(lengths.max(), lengths.size(0)).fill_(self.pad_index)
-        attr = torch.LongTensor(attr)
+        attr = torch.LongTensor(attributes)
 
-        sent[0] = -1    # BOS token should be replaced by style embeds
+        sent[0] = self.bos_index    # BOS token should be replaced by style embeds
         for i, s in enumerate(sentences):
             sent[1:lengths[i] - 1, i].copy_(s)
             sent[lengths[i] - 1, i] = self.eos_index

@@ -774,22 +774,22 @@ def build_attention_model(params, data, cuda=True):
 
     # loss function for decoder reconstruction
     loss_fn = []
-    for n_words in params.n_words:
-        loss_weight = torch.FloatTensor(n_words).fill_(1)
-        loss_weight[params.pad_index] = 0
-        if params.label_smoothing <= 0:
-            loss_fn.append(nn.CrossEntropyLoss(loss_weight, size_average=True))
-        else:
-            loss_fn.append(LabelSmoothedCrossEntropyLoss(
-                params.label_smoothing,
-                params.pad_index,
-                size_average=True,
-                weight=loss_weight,
-            ))
+    loss_weight = torch.FloatTensor(params.n_words).fill_(1)
+    loss_weight[params.pad_index] = 0
+    if params.label_smoothing <= 0:
+        loss_fn.append(nn.CrossEntropyLoss(loss_weight, reduction='mean'))
+    else:
+        loss_fn.append(LabelSmoothedCrossEntropyLoss(
+            params.label_smoothing,
+            params.pad_index,
+            reduction='mean',
+            weight=loss_weight,
+        ))
     decoder.loss_fn = nn.ModuleList(loss_fn)
 
     # language model
     if params.lambda_lm not in ["0", "-1"]:
+        raise NotImplementedError("Language Model not implemeted yet")
         logger.info("============ Building attention model - Language model ...")
         lm = LM(params, encoder, decoder)
         logger.info("")
@@ -800,8 +800,6 @@ def build_attention_model(params, data, cuda=True):
     if cuda:
         encoder.cuda()
         decoder.cuda()
-        if len(params.vocab) > 0:
-            decoder.vocab_mask_neg = [x.cuda() for x in decoder.vocab_mask_neg]
         if discriminator is not None:
             discriminator.cuda()
         if lm is not None:

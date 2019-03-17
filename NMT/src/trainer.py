@@ -13,11 +13,13 @@ import torch
 from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
 
-from .utils import reverse_sentences, clip_parameters
+from .utils import reverse_sentences, clip_parameters, sample_style
 from .utils import get_optimizer, parse_lambda_config, update_lambdas
 from .model import build_mt_model
 from .multiprocessing_event_loop import MultiprocessingEventLoop
 from .test import test_sharing
+
+from IPython import embed
 
 
 logger = getLogger()
@@ -40,18 +42,15 @@ class TrainerMT(MultiprocessingEventLoop):
         self.params = params
 
         # initialization for on-the-fly generation/training
-        if len(params.pivo_directions) > 0:
-            self.otf_start_multiprocessing()
+        self.otf_start_multiprocessing()
 
         # define encoder parameters (the ones shared with the
         # decoder are optimized by the decoder optimizer)
         enc_params = list(encoder.parameters())
-        for i in range(params.n_langs):
-            if params.share_lang_emb and i > 0:
-                break
-            assert enc_params[i].size() == (params.n_words[i], params.emb_dim)
+        assert enc_params[0].size() == (params.n_words, params.emb_dim)
+
         if self.params.share_encdec_emb:
-            to_ignore = 1 if params.share_lang_emb else params.n_langs
+            to_ignore = 1
             enc_params = enc_params[to_ignore:]
 
         # optimizers
@@ -73,14 +72,8 @@ class TrainerMT(MultiprocessingEventLoop):
         # define validation metrics / stopping criterion used for early stopping
         logger.info("Stopping criterion: %s" % params.stopping_criterion)
         if params.stopping_criterion == '':
-            for lang1, lang2 in self.data['para'].keys():
-                for data_type in ['valid', 'test']:
-                    self.VALIDATION_METRICS.append('bleu_%s_%s_%s' % (lang1, lang2, data_type))
-            for lang1, lang2, lang3 in self.params.pivo_directions:
-                if lang1 == lang3:
-                    continue
-                for data_type in ['valid', 'test']:
-                    self.VALIDATION_METRICS.append('bleu_%s_%s_%s_%s' % (lang1, lang2, lang3, data_type))
+            for data_type in ['valid', 'test']:
+                self.VALIDATION_METRICS.append('self_bleu_%s' % (data_type))
             self.stopping_criterion = None
             self.best_stopping_criterion = None
         else:
@@ -107,23 +100,16 @@ class TrainerMT(MultiprocessingEventLoop):
             'dis_costs': [],
             'processed_s': 0,
             'processed_w': 0,
+            'xe_ae_costs': [],
+            'xe_bt_costs': [],
+            'lme_costs': [],
+            'lmd_costs': [],
+            'lmer_costs': [],
+            'enc_norms': []
         }
-        for lang in params.mono_directions:
-            self.stats['xe_costs_%s_%s' % (lang, lang)] = []
-        for lang1, lang2 in params.para_directions:
-            self.stats['xe_costs_%s_%s' % (lang1, lang2)] = []
-        for lang1, lang2 in params.back_directions:
-            self.stats['xe_costs_bt_%s_%s' % (lang1, lang2)] = []
-        for lang1, lang2, lang3 in params.pivo_directions:
-            self.stats['xe_costs_%s_%s_%s' % (lang1, lang2, lang3)] = []
-        for lang in params.langs:
-            self.stats['lme_costs_%s' % lang] = []
-            self.stats['lmd_costs_%s' % lang] = []
-            self.stats['lmer_costs_%s' % lang] = []
-            self.stats['enc_norms_%s' % lang] = []
+
         self.last_time = time.time()
-        if len(params.pivo_directions) > 0:
-            self.gen_time = 0
+        self.gen_time = 0
 
         # data iterators
         self.iterators = {}
@@ -132,58 +118,42 @@ class TrainerMT(MultiprocessingEventLoop):
         self.init_bpe()
 
         # initialize lambda coefficients and their configurations
-        parse_lambda_config(params, 'lambda_xe_mono')
-        parse_lambda_config(params, 'lambda_xe_para')
-        parse_lambda_config(params, 'lambda_xe_back')
-        parse_lambda_config(params, 'lambda_xe_otfd')
-        parse_lambda_config(params, 'lambda_xe_otfa')
-        parse_lambda_config(params, 'lambda_dis')
+        parse_lambda_config(params, 'lambda_xe_ae')
+        parse_lambda_config(params, 'lambda_xe_otf_bt')
         parse_lambda_config(params, 'lambda_lm')
+        parse_lambda_config(params, 'lambda_dis')
 
     def init_bpe(self):
         """
         Index BPE words.
         """
         self.bpe_end = []
-        for lang in self.params.langs:
-            dico = self.data['dico'][lang]
-            self.bpe_end.append(np.array([not dico[i].endswith('@@') for i in range(len(dico))]))
+        dico = self.data['dico']
+        self.bpe_end.append(np.array([not dico[i].endswith('@@') for i in range(len(dico))]))
 
-    def get_iterator(self, iter_name, lang1, lang2, back):
+    def get_iterator(self, iter_name):
         """
         Create a new iterator for a dataset.
         """
-        assert back is False or lang2 is not None
-        key = ','.join([x for x in [iter_name, lang1, lang2] if x is not None]) + ('_back' if back else '')
-        logger.info("Creating new training %s iterator ..." % key)
-        if lang2 is None:
-            dataset = self.data['mono'][lang1]['train']
-        elif back:
-            dataset = self.data['back'][(lang1, lang2)]
-        else:
-            k = (lang1, lang2) if lang1 < lang2 else (lang2, lang1)
-            dataset = self.data['para'][k]['train']
-        iterator = dataset.get_iterator(shuffle=True, group_by_size=self.params.group_by_size)()
-        self.iterators[key] = iterator
+        dataset = self.data['splits']['train']
+        iterator = dataset.get_iterator(shuffle=True,
+                group_by_size=self.params.group_by_size)()
+        self.iterators[iter_name] = iterator
         return iterator
 
-    def get_batch(self, iter_name, lang1, lang2, back=False):
+    def get_batch(self, iter_name):
         """
         Return a batch of sentences from a dataset.
         """
-        assert back is False or lang2 is not None
-        assert lang1 in self.params.langs
-        assert lang2 is None or lang2 in self.params.langs
-        key = ','.join([x for x in [iter_name, lang1, lang2] if x is not None]) + ('_back' if back else '')
-        iterator = self.iterators.get(key, None)
+        iterator = self.iterators.get(iter_name, None)
         if iterator is None:
-            iterator = self.get_iterator(iter_name, lang1, lang2, back)
+            iterator = self.get_iterator(iter_name)
         try:
             batch = next(iterator)
         except StopIteration:
-            iterator = self.get_iterator(iter_name, lang1, lang2, back)
+            iterator = self.get_iterator(iter_name)
             batch = next(iterator)
-        return batch if (lang2 is None or lang1 < lang2 or back) else batch[::-1]
+        return batch
 
     def word_shuffle(self, x, l, lang_id):
         """
@@ -432,6 +402,20 @@ class TrainerMT(MultiprocessingEventLoop):
         self.stats['processed_s'] += len1.size(0)
         self.stats['processed_w'] += len1.sum()
 
+    def feat_extr_step(self, batch, lambda_ipot):
+        pass
+    
+    def enc_dec_ae_step(self):
+        # essentially enc_dec_step(...) called in AE mode
+        pass
+
+    def enc_dec_bt_step(self):
+        # essentially otf_bt(...) called in AE mode (yes AE mode, not a typo)
+        pass
+
+    def enc_dec_adv_step(self):
+        pass
+
     def enc_dec_step(self, lang1, lang2, lambda_xe, back=False):
         """
         Source / target autoencoder training (parallel data):
@@ -550,13 +534,15 @@ class TrainerMT(MultiprocessingEventLoop):
     def otf_bt_gen_async(self, init_cache_size=None):
         logger.info("Populating initial OTF generation cache ...")
         if init_cache_size is None:
-            init_cache_size = self.num_replicas
+            #init_cache_size = self.num_replicas
+            init_cache_size = 1
         cache = [
             self.call_async(rank=i % self.num_replicas, action='_async_otf_bt_gen',
                             result_type='otf_gen', fetch_all=True,
-                            batches=self.get_worker_batches())
+                            batch=self.get_batch('otf'))
             for i in range(init_cache_size)
         ]
+
         while True:
             results = cache[0].gen()
             for rank, _ in results:
@@ -564,47 +550,12 @@ class TrainerMT(MultiprocessingEventLoop):
                 cache.append(
                     self.call_async(rank=rank, action='_async_otf_bt_gen',
                                     result_type='otf_gen', fetch_all=True,
-                                    batches=self.get_worker_batches())
+                                    batch=self.get_batch('otf'))
                 )
             for _, result in results:
                 yield result
 
-    def get_worker_batches(self):
-        """
-        Create batches for CPU threads.
-        """
-        batches = []
-
-        for direction in self.params.pivo_directions:
-
-            lang1, lang2, lang3 = direction
-
-            # 2-lang back-translation - autoencoding
-            if lang1 != lang2 == lang3:
-                if self.params.lambda_xe_otfa > 0:
-                    (sent1, len1), (sent3, len3) = self.get_batch('otf', lang1, lang3)
-            # 2-lang back-translation - parallel data
-            elif lang1 == lang3 != lang2:
-                if self.params.lambda_xe_otfd > 0:
-                    sent1, len1 = self.get_batch('otf', lang1, None)
-                    sent3, len3 = sent1, len1
-            # 3-lang back-translation - parallel data
-            else:
-                assert lang1 != lang2 and lang2 != lang3 and lang1 != lang3
-                if self.params.lambda_xe_otfd > 0:
-                    (sent1, len1), (sent3, len3) = self.get_batch('otf', lang1, lang3)
-
-            batches.append({
-                'direction': direction,
-                'sent1': sent1,
-                'sent3': sent3,
-                'len1': len1,
-                'len3': len3,
-            })
-
-        return batches
-
-    def _async_otf_bt_gen(self, rank, device_id, batches):
+    def _async_otf_bt_gen(self, rank, device_id, batch):
         """
         On the fly back-translation (generation step).
         """
@@ -616,29 +567,25 @@ class TrainerMT(MultiprocessingEventLoop):
 
         with torch.no_grad():
 
-            for batch in batches:
-                lang1, lang2, lang3 = batch['direction']
-                lang1_id = params.lang2id[lang1]
-                lang2_id = params.lang2id[lang2]
-                sent1, len1 = batch['sent1'], batch['len1']
-                sent3, len3 = batch['sent3'], batch['len3']
+            sent1, len1, attr1 = batch
 
-                # lang1 -> lang2
-                encoded = self.encoder(sent1, len1, lang_id=lang1_id)
-                max_len = int(1.5 * len1.max() + 10)
-                if params.otf_sample == -1:
-                    sent2, len2, _ = self.decoder.generate(encoded, lang_id=lang2_id, max_len=max_len)
-                else:
-                    sent2, len2, _ = self.decoder.generate(encoded, lang_id=lang2_id, max_len=max_len,
-                                                           sample=True, temperature=params.otf_sample)
+            encoded = self.encoder(sent1, len1, attr1)
+            max_len = int(1.5 * len1.max() + 10)
 
-                # keep cached batches on CPU for easier transfer
-                assert not any(x.is_cuda for x in [sent1, sent2, sent3])
-                results.append(dict([
-                    ('lang1', lang1), ('sent1', sent1), ('len1', len1),
-                    ('lang2', lang2), ('sent2', sent2), ('len2', len2),
-                    ('lang3', lang3), ('sent3', sent3), ('len3', len3),
-                ]))
+            attr2 = sample_style(params, attr1)
+
+            if params.otf_sample == -1:
+                sent2, len2, _ = self.decoder.generate(encoded, attr2, max_len=max_len)
+            else:
+                sent2, len2, _ = self.decoder.generate(encoded, attr2, max_len=max_len,
+                                                       sample=True, temperature=params.otf_sample)
+
+            assert not any(x.is_cuda for x in [sent1, sent2])
+            results.append(dict([
+                 ('sent1', sent1), ('len1', len1), ('attr1', attr1),
+                 ('sent2', sent2), ('len2', len2), ('attr2', attr2),
+                 ('sent3', sent1), ('len3', len1), ('attr3', attr1),
+            ]))
 
         return (rank, results)
 

@@ -10,10 +10,12 @@ import json
 import argparse
 
 from src.data.loader import check_all_data_params, load_data, load_st_data
-from src.utils import bool_flag, initialize_exp
+from src.utils import bool_flag, initialize_exp, sample_style
 from src.model import check_mt_model_params, build_mt_model
 from src.trainer import TrainerMT
 from src.evaluator import EvaluatorMT
+
+from IPython import embed
 
 
 def get_parser():
@@ -76,8 +78,6 @@ def get_parser():
                                 help="Input feeding")
             parser.add_argument("--share_att_proj", type=bool_flag, default=False,
                                 help="Share attention projetion layer")
-    parser.add_argument("--share_lang_emb", type=bool_flag, default=False,
-                        help="Share embedding layers between languages (enc / dec / proj)")
     parser.add_argument("--share_encdec_emb", type=bool_flag, default=False,
                         help="Share encoder embeddings / decoder embeddings")
     parser.add_argument("--share_decpro_emb", type=bool_flag, default=False,
@@ -122,24 +122,10 @@ def get_parser():
                         help="Dev prefix, expected with test and attribute suffixes.")
     parser.add_argument("--test_prefix", type=str, default="",
                         help="Test prefix, expected with test and attribute suffixes.")
-    #parser.add_argument("--langs", type=str, default="",
-    #                    help="Languages (lang1,lang2)")
     parser.add_argument("--vocab_filename", type=str, default="",
                         help="Vocabulary filename")
     parser.add_argument("--vocab_min_count", type=int, default=0,
                         help="Vocabulary minimum word count")
-    #parser.add_argument("--mono_dataset", type=str, default="",
-    #                    help="Monolingual dataset (lang1:train1,valid1,test1;lang2:train2,valid2,test2)")
-    #parser.add_argument("--para_dataset", type=str, default="",
-    #                    help="Parallel dataset (lang1-lang2:train12,valid12,test12;lang1-lang3:train13,valid13,test13)")
-    #parser.add_argument("--back_dataset", type=str, default="",
-    #                    help="Back-parallel dataset, with noisy source and clean target (lang1-lang2:train121,train122;lang2-lang1:train212,train211)")
-    #parser.add_argument("--n_mono", type=int, default=0,
-    #                    help="Number of monolingual sentences (-1 for everything)")
-    #parser.add_argument("--n_para", type=int, default=0,
-    #                    help="Number of parallel sentences (-1 for everything)")
-    #parser.add_argument("--n_back", type=int, default=0,
-    #                    help="Number of back-parallel sentences (-1 for everything)")
     parser.add_argument("--max_len", type=int, default=175,
                         help="Maximum length of sentences (after BPE)")
     parser.add_argument("--max_vocab", type=int, default=-1,
@@ -150,14 +136,6 @@ def get_parser():
     # training steps
     parser.add_argument("--n_dis", type=int, default=0,
                         help="Number of discriminator training iterations")
-    parser.add_argument("--mono_directions", type=str, default="",
-                        help="Training directions (lang1,lang2)")
-    parser.add_argument("--para_directions", type=str, default="",
-                        help="Training directions (lang1-lang2,lang2-lang1)")
-    parser.add_argument("--pivo_directions", type=str, default="",
-                        help="Training directions with online back-translation, using a pivot (lang1-lang3-lang1,lang1-lang3-lang2)]")
-    parser.add_argument("--back_directions", type=str, default="",
-                        help="Training directions with back-translation dataset (lang1-lang2)")
     parser.add_argument("--otf_sample", type=float, default=-1,
                         help="Temperature for sampling back-translations (-1 for greedy decoding)")
     parser.add_argument("--otf_backprop_temperature", type=float, default=-1,
@@ -188,15 +166,9 @@ def get_parser():
                         help="Batch size")
     parser.add_argument("--group_by_size", type=bool_flag, default=True,
                         help="Sort sentences by size during the training")
-    parser.add_argument("--lambda_xe_mono", type=str, default="0",
+    parser.add_argument("--lambda_xe_ae", type=str, default="0",
                         help="Cross-entropy reconstruction coefficient (autoencoding)")
-    parser.add_argument("--lambda_xe_para", type=str, default="0",
-                        help="Cross-entropy reconstruction coefficient (parallel data)")
-    parser.add_argument("--lambda_xe_back", type=str, default="0",
-                        help="Cross-entropy reconstruction coefficient (back-parallel data)")
-    parser.add_argument("--lambda_xe_otfd", type=str, default="0",
-                        help="Cross-entropy reconstruction coefficient (on-the-fly back-translation parallel data)")
-    parser.add_argument("--lambda_xe_otfa", type=str, default="0",
+    parser.add_argument("--lambda_xe_otf_bt", type=str, default="0",
                         help="Cross-entropy reconstruction coefficient (on-the-fly back-translation autoencoding data)")
     parser.add_argument("--lambda_dis", type=str, default="0",
                         help="Discriminator loss coefficient")
@@ -254,22 +226,20 @@ def main(params):
     logger = initialize_exp(params)
     data = load_st_data(params)
 
-    print("Loaded data.")
-
     encoder, decoder, discriminator, lm = build_mt_model(params, data)
-
-    exit()
 
     # initialize trainer / reload checkpoint / initialize evaluator
     trainer = TrainerMT(encoder, decoder, discriminator, lm, data, params)
     trainer.reload_checkpoint()
     trainer.test_sharing()  # check parameters sharing
-    evaluator = EvaluatorMT(trainer, data, params)
 
-    # evaluation mode
-    if params.eval_only:
-        evaluator.run_all_evals(0)
-        exit()
+    ## TODO: Come back and fix this!!!!
+    #evaluator = EvaluatorMT(trainer, data, params)
+
+    ## evaluation mode
+    #if params.eval_only:
+    #    evaluator.run_all_evals(0)
+    #    exit()
 
     # language model pretraining
     if params.lm_before > 0:
@@ -294,28 +264,60 @@ def main(params):
 
         while trainer.n_sentences < params.epoch_size:
 
+            #batch = trainer.get_batch('otf_gen')
+
+            #new_styles = sample_style(params, batch[2])
+            #
+
+            #embed()
+            #exit()
+
+
+            #encoded = trainer.encoder(batch[0].cuda(), batch[1], batch[2].cuda())
+
+            #max_len = int(1.5 * batch[1].max() + 10)
+
+            #sent_, len_, _ = trainer.decoder.generate(encoded, batch[2].cuda(), max_len=max_len)
+
+
+
+            # start on-the-fly batch generations
+            if not getattr(params, 'started_otf_batch_gen', False):
+                otf_iterator = trainer.otf_bt_gen_async()
+                params.started_otf_batch_gen = True
+                print("Initialized otf_bt_gen_async")
+
+            # update model parameters on subprocesses
+            if trainer.n_iter % params.otf_sync_params_every == 0:
+                trainer.otf_sync_params()
+                print("Synced parameters")
+
+            # get training batch from CPU
+            before_gen = time.time()
+            batch = next(otf_iterator)
+            trainer.gen_time += time.time() - before_gen
+
+            embed()
+            exit()
+
+###############################################################################
+
+
             # discriminator training
+            if params.n_dis > 0:
+                raise NotImplementedError()
             for _ in range(params.n_dis):
                 trainer.discriminator_step()
 
             # language model training
             if params.lambda_lm > 0:
+                raise NotImplementedError()
                 for _ in range(params.lm_after):
                     for lang in params.langs:
                         trainer.lm_step(lang)
 
-            # MT training (parallel data)
-            if params.lambda_xe_para > 0:
-                for lang1, lang2 in params.para_directions:
-                    trainer.enc_dec_step(lang1, lang2, params.lambda_xe_para)
-
-            # MT training (back-parallel data)
-            if params.lambda_xe_back > 0:
-                for lang1, lang2 in params.back_directions:
-                    trainer.enc_dec_step(lang1, lang2, params.lambda_xe_back, back=True)
-
-            # autoencoder training (monolingual data)
-            if params.lambda_xe_mono > 0:
+            # autoencoder training
+            if params.lambda_xe_ae > 0:
                 for lang in params.mono_directions:
                     trainer.enc_dec_step(lang, lang, params.lambda_xe_mono)
 

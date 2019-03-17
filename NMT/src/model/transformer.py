@@ -28,23 +28,20 @@ logger = getLogger()
 class TransformerEncoder(nn.Module):
     """Transformer encoder."""
 
-    ENC_ATTR = ['n_langs', 'n_words', 'dropout', 'padding_idx']
+    ENC_ATTR = ['n_words', 'dropout', 'padding_idx']
 
     def __init__(self, args):
         super().__init__()
         self.dropout = args.dropout
 
-        self.n_langs = args.n_langs
+        assert type(args.n_words) == int
         self.n_words = args.n_words
+        self.n_styles = args.n_styles
         embed_dim = args.encoder_embed_dim
-        if args.share_lang_emb:
-            assert len(set(args.n_words)) == 1
-            logger.info("Sharing encoder input embeddings")
-            layer_0 = Embedding(args.n_words[0], embed_dim, args.pad_index)
-            embeddings = [layer_0 for _ in range(self.n_langs)]
-        else:
-            embeddings = [Embedding(n_words, embed_dim, padding_idx=args.pad_index) for n_words in self.n_words]
-        self.embeddings = nn.ModuleList(embeddings)
+        self.embeddings = Embedding(self.n_words, embed_dim,
+                                    padding_idx=args.pad_index)
+        self.style_embeddings = Embedding(self.n_styles, embed_dim, padding_idx=-1)
+
         self.freeze_enc_emb = args.freeze_enc_emb
 
         self.padding_idx = args.pad_index
@@ -56,30 +53,24 @@ class TransformerEncoder(nn.Module):
 
         self.layers = nn.ModuleList()
         for k in range(args.encoder_layers):
-            # share top share_enc layers
-            layer_is_shared = (k >= (args.encoder_layers - args.share_enc))
-            if layer_is_shared:
-                logger.info("Sharing encoder transformer parameters for layer %i" % k)
+            self.layers.append(TransformerEncoderLayer(args))
 
-            self.layers.append(nn.ModuleList([
-                # layer for first lang
-                TransformerEncoderLayer(args)
-            ]))
-            for i in range(1, self.n_langs):
-                # layer for lang i
-                if layer_is_shared:
-                    # share layer from lang 0
-                    self.layers[k].append(self.layers[k][0])
-                else:
-                    self.layers[k].append(TransformerEncoderLayer(args))
+    def forward(self, src_tokens, src_lengths, src_attributes):
 
-    def forward(self, src_tokens, src_lengths, lang_id):
-        assert type(lang_id) is int
+        # NOTE: `src_attributes` are unused for now, will be used for style-specific word embeddings
 
-        embed_tokens = self.embeddings[lang_id]
+        embed_tokens = self.embeddings # Making transition to style-specific word embeddings easier
 
-        # embed tokens and positions
-        x = self.embed_scale * embed_tokens(src_tokens)
+        # embed style
+        style_embed = self.style_embeddings(src_attributes)
+        style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
+
+        # embed src tokens and replace <BOS> w/ style_embed
+        src_embed = embed_tokens(src_tokens)
+        src_embed[0] = style_embed
+
+        # embed positions
+        x = self.embed_scale * src_embed
         x = x.detach() if self.freeze_enc_emb else x
         x += self.embed_positions(src_tokens)
         x = F.dropout(x, p=self.dropout, training=self.training)
@@ -89,7 +80,7 @@ class TransformerEncoder(nn.Module):
 
         # encoder layers
         for layer in self.layers:
-            x = layer[lang_id](x, encoder_padding_mask)
+            x = layer(x, encoder_padding_mask)
 
         return LatentState(
             input_len=src_lengths,
@@ -115,14 +106,13 @@ class TransformerEncoder(nn.Module):
 class TransformerDecoder(nn.Module):
     """Transformer decoder."""
 
-    DEC_ATTR = ['n_langs', 'n_words', ('share_lang_emb', False), ('share_encdec_emb', False), ('share_decpro_emb', False), ('share_dec', False), 'dropout', 'eos_index', 'pad_index', 'bos_index']
+    DEC_ATTR = ['n_words', ('share_encdec_emb', False), ('share_decpro_emb', False), ('share_dec', False), 'dropout', 'eos_index', 'pad_index', 'bos_index']
 
     def __init__(self, args, encoder):
+
         super().__init__()
         self.dropout = args.dropout
-        self.n_langs = args.n_langs
         self.n_words = args.n_words
-        self.share_lang_emb = args.share_lang_emb
         self.share_encdec_emb = args.share_encdec_emb
         self.share_decpro_emb = args.share_decpro_emb
         self.share_output_emb = args.share_output_emb
@@ -137,23 +127,20 @@ class TransformerDecoder(nn.Module):
         self.pad_index = args.pad_index
         self.bos_index = args.bos_index
 
-        # words allowed for generation
-        self.vocab_mask_neg = args.vocab_mask_neg if len(args.vocab) > 0 else None  # TODO: implement
-
         # embedding layers
         self.emb_dim = args.decoder_embed_dim
         if self.share_encdec_emb:
             logger.info("Sharing encoder and decoder input embeddings")
             embeddings = encoder.embeddings
+            style_embeddings = encoder.style_embeddings
         else:
-            if self.share_lang_emb:
-                logger.info("Sharing decoder input embeddings")
-                layer_0 = Embedding(self.n_words[0], self.emb_dim, padding_idx=self.pad_index)
-                embeddings = [layer_0 for _ in range(self.n_langs)]
-            else:
-                embeddings = [Embedding(n_words, self.emb_dim, padding_idx=self.pad_index) for n_words in self.n_words]
-            embeddings = nn.ModuleList(embeddings)
+            logger.info("Creating new decoder input embeddings")
+            embeddings = Embedding(self.n_words, self.emb_dim,
+                                   padding_idx=args.pad_index)
+            style_embeddings = Embedding(self.n_styles, embed_dim,
+                                         padding_idx=-1)
         self.embeddings = embeddings
+        self.style_embeddings = style_embeddings
         self.embed_scale = math.sqrt(self.emb_dim)
         self.embed_positions = PositionalEmbedding(
             1024, self.emb_dim, self.pad_index,
@@ -162,65 +149,48 @@ class TransformerDecoder(nn.Module):
 
         self.layers = nn.ModuleList()
         for k in range(args.decoder_layers):
-            # share bottom share_dec layers
-            layer_is_shared = (k < args.share_dec)
-            if layer_is_shared:
-                logger.info("Sharing decoder transformer parameters for layer %i" % k)
+            self.layers.append(TransformerDecoderLayer(args))
 
-            self.layers.append(nn.ModuleList([
-                # layer for first lang
-                TransformerDecoderLayer(args)
-            ]))
-            for i in range(1, self.n_langs):
-                # layer for lang i
-                if layer_is_shared:
-                    # share layer from lang 0
-                    self.layers[k].append(self.layers[k][0])
-                else:
-                    self.layers[k].append(TransformerDecoderLayer(args))
 
         # projection layers
-        proj = [nn.Linear(self.emb_dim, n_words) for n_words in self.n_words]
+        proj = nn.Linear(self.emb_dim, self.n_words)
         if self.share_decpro_emb:
             logger.info("Sharing input embeddings and projection matrix in the decoder")
-            for i in range(self.n_langs):
-                proj[i].weight = self.embeddings[i].weight
-            if self.share_lang_emb:
-                assert self.share_output_emb
-                logger.info("Sharing decoder projection matrices")
-                for i in range(1, self.n_langs):
-                    proj[i].bias = proj[0].bias
-        elif self.share_output_emb:
-            assert self.share_lang_emb
-            logger.info("Sharing decoder projection matrices")
-            for i in range(1, self.n_langs):
-                proj[i].weight = proj[0].weight
-                proj[i].bias = proj[0].bias
-        self.proj = nn.ModuleList(proj)
+            proj.weight = self.embeddings.weight
+        self.proj = proj
 
-    def forward(self, encoded, y, lang_id, one_hot=False, incremental_state=None):
+        # TODO: implement decoder output proj style-specific biases here
+
+    def forward(self, encoded, y, tgt_attributes, one_hot=False, incremental_state=None):
         assert not one_hot, 'one_hot=True has not been implemented for transformer'
-        assert type(lang_id) is int
 
         prev_output_tokens = y  # T x B
         encoder_out = encoded.dec_input
-        embed_tokens = self.embeddings[lang_id]
-        proj_layer = self.proj[lang_id]
+        embed_tokens = self.embeddings
+        proj_layer = self.proj
+
+        # embed style
+        style_embed = self.style_embeddings(tgt_attributes)
+        style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
+
+        # embed tokens and replace <BOS> w/ style_embed
+        if incremental_state is not None:
+            prev_output_tokens = prev_output_tokens[-1:, :]  # only keep last time step
+        prev_output_embed = embed_tokens(prev_output_tokens)
+        prev_output_embed[0] = style_embed
 
         # embed positions
         positions = self.embed_positions(prev_output_tokens, incremental_state)
 
         # embed tokens and positions
-        if incremental_state is not None:
-            prev_output_tokens = prev_output_tokens[-1:, :]  # only keep last time step
-        x = self.embed_scale * embed_tokens(prev_output_tokens)
+        x = self.embed_scale * prev_output_embed
         x = x.detach() if self.freeze_dec_emb else x
         x += positions
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         # decoder layers
         for layer in self.layers:
-            x, attn = layer[lang_id](
+            x, attn = layer(
                 x,
                 encoder_out['encoder_out'],
                 encoder_out['encoder_padding_mask'],
@@ -256,7 +226,8 @@ class TransformerDecoder(nn.Module):
             encoder_out_dict['encoder_padding_mask'] = \
                 encoder_out_dict['encoder_padding_mask'].index_select(0, new_order)
 
-    def generate(self, encoded, lang_id, max_len=200, sample=False, temperature=None):
+    def generate(self, encoded, tgt_attributes, max_len=200, sample=False,
+                 temperature=None):
         """
         Generate a sentence from a given initial state.
         Input:
@@ -267,7 +238,8 @@ class TransformerDecoder(nn.Module):
             - LongTensor of size (batch_size,), sentence x_len
         """
         if self.beam_size > 0:
-            return self.generate_beam(encoded, lang_id, self.beam_size, max_len, sample, temperature)
+            return self.generate_beam(encoded, tgt_attributes, self.beam_size,
+                                      max_len, sample, temperature)
 
         encoder_out = encoded.dec_input
         latent = encoder_out['encoder_out']
@@ -277,7 +249,6 @@ class TransformerDecoder(nn.Module):
         one_hot = None
 
         # check inputs
-        assert type(lang_id) is int
         assert latent.size() == (x_len.max(), x_len.size(0), self.emb_dim)
         assert (sample is True) ^ (temperature is None)
 
@@ -292,13 +263,14 @@ class TransformerDecoder(nn.Module):
             decoded = decoded.cuda()
             unfinished_sents = unfinished_sents.cuda()
             lengths = lengths.cuda()
-        decoded[0] = self.bos_index[lang_id]
+        decoded[0] = self.bos_index
 
         incremental_state = {}
         while cur_len < max_len:
 
             # previous word embeddings
-            scores = self.forward(encoded, decoded[:cur_len], lang_id, one_hot, incremental_state)
+            scores = self.forward(encoded, decoded[:cur_len], tgt_attributes,
+                                  one_hot, incremental_state)
             scores = scores.data[-1, :, :]  # T x B x V -> B x V
 
             # select next words: sample or one-hot
@@ -322,7 +294,8 @@ class TransformerDecoder(nn.Module):
 
         return decoded[:cur_len], lengths, one_hot
 
-    def generate_beam(self, encoded, lang_id, beam_size=20, max_len=175, sample=False, temperature=None):
+    def generate_beam(self, encoded, tgt_attributes, beam_size=20, max_len=175,
+                      sample=False, temperature=None):
         """
         Generate a sentence from a given initial state.
         Input:
@@ -339,26 +312,25 @@ class TransformerDecoder(nn.Module):
         one_hot = None
 
         # check inputs
-        assert type(lang_id) is int
         # assert latent.size() == (x_len.max(), x_len.size(0) * beam_size, self.emb_dim)
         assert (sample is True) ^ (temperature is None)
         assert temperature is None, 'not supported'
 
         generator = SequenceGenerator(
-            self, self.bos_index[lang_id], self.pad_index, self.eos_index,
-            self.n_words[lang_id], beam_size=beam_size, maxlen=max_len, sampling=sample,
+            self, self.bos_index, self.pad_index, self.eos_index,
+            self.n_words, beam_size=beam_size, maxlen=max_len, sampling=sample,
             len_penalty=self.length_penalty,
         )
         if is_cuda:
             x_len = x_len.cuda()
-        results = generator.generate(x_len, encoded, lang_id)
+        results = generator.generate(x_len, encoded, tgt_attributes)
 
         lengths = torch.LongTensor([sent[0]['tokens'].numel() for sent in results])
         lengths.add_(1)  # for BOS
         max_len = lengths.max()
         bsz = len(results)
         decoded = results[0][0]['tokens'].new(max_len, bsz).fill_(0)
-        decoded[0, :] = self.bos_index[lang_id]
+        decoded[0, :] = self.bos_index
         for i, sent in enumerate(results):
             ntoks = sent[0]['tokens'].numel()  # pick the top beam result
             decoded[1:ntoks + 1, i] = sent[0]['tokens']

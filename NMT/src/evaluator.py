@@ -63,11 +63,14 @@ class EvaluatorMT(object):
         for batch in dataset.get_iterator(shuffle=False, group_by_size=True)():
             yield batch if i is None else batch[i]
 
-    def get_iterator(self, data_type, lang1, lang2):
+    def get_iterator(self, data_type):
         """
         Create a new iterator for a dataset.
         """
         assert data_type in ['valid', 'test']
+        dataset = self.data['split'][data_type]
+
+
         if lang2 is None or lang1 == lang2:
             for batch in self.mono_iterator(data_type, lang1):
                 yield batch if lang2 is None else (batch, batch)

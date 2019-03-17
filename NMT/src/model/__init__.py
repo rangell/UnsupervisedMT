@@ -25,8 +25,6 @@ def check_mt_model_params(params):
     assert 0 <= params.share_enc <= params.n_enc_layers + int(params.attention and not params.transformer or not params.attention and params.proj_mode == 'proj')
     assert 0 <= params.share_dec <= params.n_dec_layers
     assert not params.share_decpro_emb or params.lstm_proj or getattr(params, 'transformer', False) or params.emb_dim == params.hidden_dim
-    assert not params.share_output_emb or params.share_lang_emb
-    assert (not (params.share_decpro_emb and params.share_lang_emb)) or params.share_output_emb
     assert not params.lstm_proj or not (params.attention and params.transformer)
     assert not params.share_lstm_proj or params.lstm_proj
 
