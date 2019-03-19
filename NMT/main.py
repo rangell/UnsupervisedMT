@@ -15,6 +15,8 @@ from src.model import check_mt_model_params, build_mt_model
 from src.trainer import TrainerMT
 from src.evaluator import EvaluatorMT
 
+from src.model.feature_extractor import ConvFeatureExtractor
+ 
 from IPython import embed
 
 
@@ -264,22 +266,18 @@ def main(params):
 
         while trainer.n_sentences < params.epoch_size:
 
-            #batch = trainer.get_batch('otf_gen')
+            batch = trainer.get_batch('feat_extr')
+            feature_extractor = ConvFeatureExtractor(params, trainer.encoder)
+            feature_extractor = feature_extractor.cuda()
 
-            #new_styles = sample_style(params, batch[2])
-            #
+            out = feature_extractor(batch[0].cuda(), batch[1], batch[2].cuda())
 
-            #embed()
-            #exit()
+            embed()
+            exit()
 
-
-            #encoded = trainer.encoder(batch[0].cuda(), batch[1], batch[2].cuda())
-
-            #max_len = int(1.5 * batch[1].max() + 10)
-
-            #sent_, len_, _ = trainer.decoder.generate(encoded, batch[2].cuda(), max_len=max_len)
-
-
+            ## AE step
+            #trainer.enc_dec_ae_step(params.lambda_xe_ae)
+            #print("Ran one enc_dec ae step")
 
             # start on-the-fly batch generations
             if not getattr(params, 'started_otf_batch_gen', False):

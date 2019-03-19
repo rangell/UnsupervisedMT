@@ -402,15 +402,65 @@ class TrainerMT(MultiprocessingEventLoop):
         self.stats['processed_s'] += len1.size(0)
         self.stats['processed_w'] += len1.sum()
 
-    def feat_extr_step(self, batch, lambda_ipot):
-        pass
     
-    def enc_dec_ae_step(self):
+    def enc_dec_ae_step(self, lambda_xe):
         # essentially enc_dec_step(...) called in AE mode
-        pass
+        params = self.params
+        loss_fn = self.decoder.loss_fn[0]
+        n_words = params.n_words
+        self.encoder.train()
+        self.decoder.train()
+        if self.discriminator is not None:
+            self.discriminator.eval()
+
+        # get batch
+        sent_, len_, attr_ = self.get_batch('encdec_ae')
+        sent_ = sent_.cuda()
+        attr_ = attr_.cuda()
+
+        # encode
+        encoded = self.encoder(sent_, len_, attr_)
+        self.stats['enc_norms'].append(encoded.dis_input.data.norm(2, 1).mean().item())
+
+        # decode
+        scores = self.decoder(encoded, sent_[:-1], attr_)
+        xe_loss = loss_fn(scores.view(-1, n_words), sent_[1:].view(-1))
+
+        self.stats['xe_ae_costs'].append(xe_loss.item())
+
+        # discriminator feedback loss
+        if params.lambda_dis:
+            predictions = self.discriminator(encoded.dis_input.view(-1, encoded.dis_input.size(-1)))
+            fake_y = torch.LongTensor(predictions.size(0)).random_(1, params.n_langs)
+            fake_y = (fake_y + lang1_id) % params.n_langs
+            fake_y = fake_y.cuda()
+            dis_loss = F.cross_entropy(predictions, fake_y)
+
+        # total loss
+        assert lambda_xe > 0
+        loss = lambda_xe * xe_loss
+        if params.lambda_dis:
+            loss = loss + params.lambda_dis * dis_loss
+
+        # check NaN
+        if (loss != loss).data.any():
+            logger.error("NaN detected")
+            exit()
+
+        # optimizer
+        self.zero_grad(['enc', 'dec'])
+        loss.backward()
+        self.update_params(['enc', 'dec'])
+
+        # number of processed sentences / words
+        self.stats['processed_s'] += len_.size(0)
+        self.stats['processed_w'] += len_.sum()
 
     def enc_dec_bt_step(self):
         # essentially otf_bt(...) called in AE mode (yes AE mode, not a typo)
+        pass
+
+    def feat_extr_step(self, batch, lambda_ipot):
         pass
 
     def enc_dec_adv_step(self):
