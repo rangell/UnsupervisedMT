@@ -15,7 +15,7 @@ from src.model import check_mt_model_params, build_mt_model
 from src.trainer import TrainerMT
 from src.evaluator import EvaluatorMT
 
-from src.model.feature_extractor import ConvFeatureExtractor
+from src.model.feature_extractor import ConvFeatureExtractor, cost_matrix, IPOT
  
 from IPython import embed
 
@@ -142,7 +142,9 @@ def get_parser():
                         help="Temperature for sampling back-translations (-1 for greedy decoding)")
     parser.add_argument("--otf_backprop_temperature", type=float, default=-1,
                         help="Back-propagate through the encoder (-1 to disable, temperature otherwise)")
-    parser.add_argument("--otf_sync_params_every", type=int, default=1000, metavar="N",
+    parser.add_argument("--otf_bt_sync_params_every", type=int, default=1000, metavar="N",
+                        help="Number of updates between synchronizing params")
+    parser.add_argument("--otf_fe_sync_params_every", type=int, default=10, metavar="N",
                         help="Number of updates between synchronizing params")
     parser.add_argument("--otf_num_processes", type=int, default=30, metavar="N",
                         help="Number of processes to use for OTF generation")
@@ -174,6 +176,10 @@ def get_parser():
                         help="Cross-entropy reconstruction coefficient (on-the-fly back-translation autoencoding data)")
     parser.add_argument("--lambda_dis", type=str, default="0",
                         help="Discriminator loss coefficient")
+    parser.add_argument("--lambda_feat_extr", type=str, default="0",
+                        help="Feature extractor loss coefficient")
+    parser.add_argument("--lambda_adv", type=str, default="0",
+                        help="Feature extractor loss coefficient")
     parser.add_argument("--lambda_lm", type=str, default="0",
                         help="Language model loss coefficient")
     parser.add_argument("--enc_optimizer", type=str, default="adam,lr=0.0003",
@@ -181,6 +187,8 @@ def get_parser():
     parser.add_argument("--dec_optimizer", type=str, default="enc_optimizer",
                         help="Decoder optimizer (SGD / RMSprop / Adam, etc.)")
     parser.add_argument("--dis_optimizer", type=str, default="rmsprop,lr=0.0005",
+                        help="Discriminator optimizer (SGD / RMSprop / Adam, etc.)")
+    parser.add_argument("--feat_extr_optimizer", type=str, default="rmsprop,lr=0.0005",
                         help="Discriminator optimizer (SGD / RMSprop / Adam, etc.)")
     parser.add_argument("--clip_grad_norm", type=float, default=5,
                         help="Clip gradients norm (0 to disable)")
@@ -228,10 +236,11 @@ def main(params):
     logger = initialize_exp(params)
     data = load_st_data(params)
 
-    encoder, decoder, discriminator, lm = build_mt_model(params, data)
+    encoder, decoder, discriminator, feat_extr, lm = build_mt_model(params, data)
 
     # initialize trainer / reload checkpoint / initialize evaluator
-    trainer = TrainerMT(encoder, decoder, discriminator, lm, data, params)
+    trainer = TrainerMT(encoder, decoder, discriminator, feat_extr, lm, data, params)
+
     trainer.reload_checkpoint()
     trainer.test_sharing()  # check parameters sharing
 
@@ -266,18 +275,55 @@ def main(params):
 
         while trainer.n_sentences < params.epoch_size:
 
-            batch = trainer.get_batch('feat_extr')
-            feature_extractor = ConvFeatureExtractor(params, trainer.encoder)
-            feature_extractor = feature_extractor.cuda()
+            #if params.lambda_adv > 0:
+            #    trainer.enc_dec_adv_step(params, params.lambda_adv)
+            #    print("Finished enc/dec adv step!!!")
+            #    exit()
 
-            out = feature_extractor(batch[0].cuda(), batch[1], batch[2].cuda())
+            # Optimize feature extractor
+            if params.lambda_feat_extr > 0:
+                # start on-the-fly batch generations
+                if not getattr(params, 'started_otf_fe_batch_gen', False):
+                    trainer.otf_before_gen(
+                            iter_name='otf_fe',
+                            num_proc=(params.otf_num_processes//2))
+                    otf_fe_iterator = trainer.otf_gen_async(iter_name='otf_fe')
+                    params.started_otf_fe_batch_gen = True
+
+                # update model parameters on subprocesses
+                if trainer.n_iter % params.otf_fe_sync_params_every == 0:
+                    trainer.otf_sync_params(iter_name='otf_fe')
+
+                # get training batch from CPU
+                before_gen = time.time()
+                batch = next(otf_fe_iterator)
+                trainer.gen_time += time.time() - before_gen
+
+                # optimize feature extractor
+                trainer.feat_extr_step(batch, params.lambda_feat_extr)
+
+                print("Finished feat_extr_step!!!!")
+                exit()
+
+
+            batch = trainer.get_batch('feat_extr')
+            feat_extr = trainer.feat_extr
+
+            out = feat_extr(batch[0].cuda(), batch[1], batch[2].cuda())
+
+            C = cost_matrix(out, out)
+            ipot_cost = IPOT(out, out)
 
             embed()
             exit()
 
-            ## AE step
-            #trainer.enc_dec_ae_step(params.lambda_xe_ae)
-            #print("Ran one enc_dec ae step")
+            if params.lambda_xe_ae > 0:
+                trainer.enc_dec_ae_step(params.lambda_xe_ae)
+
+
+
+
+
 
             # start on-the-fly batch generations
             if not getattr(params, 'started_otf_batch_gen', False):

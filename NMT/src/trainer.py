@@ -16,8 +16,10 @@ from torch.nn.utils import clip_grad_norm_
 from .utils import reverse_sentences, clip_parameters, sample_style
 from .utils import get_optimizer, parse_lambda_config, update_lambdas
 from .model import build_mt_model
+from .model.feature_extractor import IPOT
 from .multiprocessing_event_loop import MultiprocessingEventLoop
 from .test import test_sharing
+
 
 from IPython import embed
 
@@ -29,7 +31,7 @@ class TrainerMT(MultiprocessingEventLoop):
 
     VALIDATION_METRICS = []
 
-    def __init__(self, encoder, decoder, discriminator, lm, data, params):
+    def __init__(self, encoder, decoder, discriminator, feat_extr, lm, data, params):
         """
         Initialize trainer.
         """
@@ -37,35 +39,61 @@ class TrainerMT(MultiprocessingEventLoop):
         self.encoder = encoder
         self.decoder = decoder
         self.discriminator = discriminator
+        self.feat_extr = feat_extr
         self.lm = lm
         self.data = data
         self.params = params
 
         # initialization for on-the-fly generation/training
         self.otf_start_multiprocessing()
+        self.subprocess_ids = list(range(self.num_replicas))
+        self.ranks = {}
 
         # define encoder parameters (the ones shared with the
         # decoder are optimized by the decoder optimizer)
         enc_params = list(encoder.parameters())
+        feat_extr_params = list(feat_extr.parameters())
         assert enc_params[0].size() == (params.n_words, params.emb_dim)
+        assert enc_params[1].size() == (params.n_styles+1, params.emb_dim)
+        assert feat_extr_params[0].size() == (params.n_words, params.emb_dim)
+        assert feat_extr_params[1].size() == (params.n_styles+1, params.emb_dim)
 
         if self.params.share_encdec_emb:
-            to_ignore = 1
+            to_ignore = 2   # ignore word embeddings and style embeddings
             enc_params = enc_params[to_ignore:]
+            feat_extr_params = feat_extr_params[to_ignore:]
 
         # optimizers
         if params.dec_optimizer == 'enc_optimizer':
             params.dec_optimizer = params.enc_optimizer
-        self.enc_optimizer = get_optimizer(enc_params, params.enc_optimizer) if len(enc_params) > 0 else None
-        self.dec_optimizer = get_optimizer(decoder.parameters(), params.dec_optimizer)
-        self.dis_optimizer = get_optimizer(discriminator.parameters(), params.dis_optimizer) if discriminator is not None else None
-        self.lm_optimizer = get_optimizer(lm.parameters(), params.enc_optimizer) if lm is not None else None
+
+        self.enc_optimizer = None
+        self.dec_optimizer = None
+        self.dis_optimizer = None
+        self.feat_extr_optimizer = None
+        self.lm_optimizer = None
+        
+        if len(enc_params) > 0:
+            self.enc_optimizer = get_optimizer(enc_params,
+                                               params.enc_optimizer)
+        self.dec_optimizer = get_optimizer(decoder.parameters(),
+                                           params.dec_optimizer)
+        if discriminator is not None:
+            self.dis_optimizer = get_optimizer(discriminator.parameters(),
+                                               params.dis_optimizer)
+        if feat_extr is not None:
+            self.feat_extr_optimizer = get_optimizer(feat_extr_params,
+                                                     params.feat_extr_optimizer)
+        if lm is not None:
+            self.lm_optimizer = get_optimizer(lm.parameters(),
+                                              params.enc_optimizer)
 
         # models / optimizers
         self.model_opt = {
             'enc': (self.encoder, self.enc_optimizer),
             'dec': (self.decoder, self.dec_optimizer),
             'dis': (self.discriminator, self.dis_optimizer),
+            'feat_extr': (self.feat_extr, self.dis_optimizer),
             'lm': (self.lm, self.lm_optimizer),
         }
 
@@ -102,6 +130,8 @@ class TrainerMT(MultiprocessingEventLoop):
             'processed_w': 0,
             'xe_ae_costs': [],
             'xe_bt_costs': [],
+            'ipot_fe_costs': [],
+            'ipot_adv_costs': [],
             'lme_costs': [],
             'lmd_costs': [],
             'lmer_costs': [],
@@ -122,6 +152,8 @@ class TrainerMT(MultiprocessingEventLoop):
         parse_lambda_config(params, 'lambda_xe_otf_bt')
         parse_lambda_config(params, 'lambda_lm')
         parse_lambda_config(params, 'lambda_dis')
+        parse_lambda_config(params, 'lambda_feat_extr')
+        parse_lambda_config(params, 'lambda_adv')
 
     def init_bpe(self):
         """
@@ -401,7 +433,6 @@ class TrainerMT(MultiprocessingEventLoop):
         # number of processed sentences / words
         self.stats['processed_s'] += len1.size(0)
         self.stats['processed_w'] += len1.sum()
-
     
     def enc_dec_ae_step(self, lambda_xe):
         # essentially enc_dec_step(...) called in AE mode
@@ -460,11 +491,60 @@ class TrainerMT(MultiprocessingEventLoop):
         # essentially otf_bt(...) called in AE mode (yes AE mode, not a typo)
         pass
 
-    def feat_extr_step(self, batch, lambda_ipot):
-        pass
+    def feat_extr_step(self, batch, lambda_feat_extr):
+        assert lambda_feat_extr > 0
 
-    def enc_dec_adv_step(self):
-        pass
+        real_reps = self.feat_extr(batch['sent1'].cuda(), batch['len1'],
+                                   batch['attr1'].cuda())
+        fake_reps = self.feat_extr(batch['sent2'].cuda(), batch['len2'],
+                                   batch['attr2'].cuda())
+        # TODO: concat negative examples (i.e. (sent2, len2, attr1), (sent1, len1, attr2), etc.)
+
+        loss = -IPOT(real_reps, fake_reps)
+        self.stats['ipot_fe_costs'].append(loss.item())
+        loss *= lambda_feat_extr
+
+        self.zero_grad(['feat_extr'])
+        loss.backward()
+        self.update_params(['feat_extr'])
+
+    def enc_dec_adv_step(self, params, lambda_adv):
+        assert lambda_adv > 0
+
+        self.encoder.train()
+        self.decoder.train()
+        self.feat_extr.eval()
+
+        sent1, len1, attr1 = self.get_batch("encdec_adv")
+
+        attr2 = sample_style(params, attr1)
+
+        sent1 = sent1.cuda()
+        attr1 = attr1.cuda()
+        attr2 = attr2.cuda()
+
+        # soft argmax / gumbel softmax...
+        encoded = self.encoder(sent1, len1, attr1)
+        max_len = int(1.5 * len1.max() + 10)
+
+        soft_sent2, len2, _ = self.decoder.generate_soft(encoded,
+                attr2, max_len=max_len, temperature=params.otf_sample)
+
+        real_reps = self.feat_extr(sent1, len1, attr1)
+        fake_reps = self.feat_extr(soft_sent2, len2, attr2, soft=True)
+        
+        loss = IPOT(real_reps, fake_reps)
+        self.stats['ipot_adv_costs'].append(loss.item())
+        loss *= lambda_adv
+
+        # optimizer
+        self.zero_grad(['enc', 'dec'])
+        loss.backward()
+        self.update_params(['enc', 'dec'])
+
+        # number of processed sentences / words
+        self.stats['processed_s'] += len2.size(0)
+        self.stats['processed_w'] += len2.sum()
 
     def enc_dec_step(self, lang1, lang2, lambda_xe, back=False):
         """
@@ -554,10 +634,10 @@ class TrainerMT(MultiprocessingEventLoop):
         self.params.cpu_thread = True
         self.data = None  # do not load data in the CPU threads
         self.iterators = {}
-        self.encoder, self.decoder, _, _ = build_mt_model(self.params, self.data, cuda=False)
+        self.encoder, self.decoder, _, _, _ = build_mt_model(self.params, self.data, cuda=False)
 
-    def otf_sync_params(self):
-        # logger.info("Syncing encoder and decoder params for OTF generation ...")
+    def otf_sync_params(self, iter_name):
+        logger.info("Syncing encoder and decoder params for {} iterator ...".format(iter_name))
 
         def get_flat_params(module):
             return torch._utils._flatten_dense_tensors(
@@ -566,7 +646,7 @@ class TrainerMT(MultiprocessingEventLoop):
         encoder_params = get_flat_params(self.encoder).cpu().share_memory_()
         decoder_params = get_flat_params(self.decoder).cpu().share_memory_()
 
-        for rank in range(self.num_replicas):
+        for rank in self.ranks[iter_name]:
             self.call_async(rank, '_async_otf_sync_params', encoder_params=encoder_params,
                             decoder_params=decoder_params)
 
@@ -581,16 +661,31 @@ class TrainerMT(MultiprocessingEventLoop):
         set_flat_params(self.encoder, encoder_params)
         set_flat_params(self.decoder, decoder_params)
 
-    def otf_bt_gen_async(self, init_cache_size=None):
-        logger.info("Populating initial OTF generation cache ...")
-        if init_cache_size is None:
-            #init_cache_size = self.num_replicas
-            init_cache_size = 1
+    def otf_before_gen(self, iter_name=None, num_proc=None):
+        assert iter_name is not None
+        assert iter_name not in self.ranks.keys()
+        assert num_proc is not None
+        assert len(self.subprocess_ids) > 0
+
+        if num_proc == -1:
+            self.ranks[iter_name] = self.subprocess_ids[:]
+            self.subprocess_ids = []
+        else:
+            self.ranks[iter_name] = self.subprocess_ids[:num_proc]
+            self.subprocess_ids = self.subprocess_ids[num_proc:]
+
+        if num_proc > len(self.subprocess_ids):
+            logger.warning("Can only provide {}/{} requested processes".format(len(self.subprocess_ids), num_proc))
+        else:
+            logger.info("Allocating {} processes to {} iterator".format(num_proc, iter_name))
+
+    def otf_gen_async(self, iter_name=None):
+        logger.info("Populating initial {} iterator cache ...".format(iter_name))
         cache = [
-            self.call_async(rank=i % self.num_replicas, action='_async_otf_bt_gen',
+            self.call_async(rank=i, action='_async_otf_gen',
                             result_type='otf_gen', fetch_all=True,
-                            batch=self.get_batch('otf'))
-            for i in range(init_cache_size)
+                            batch=self.get_batch(iter_name))
+            for i in self.ranks[iter_name]
         ]
 
         while True:
@@ -598,14 +693,14 @@ class TrainerMT(MultiprocessingEventLoop):
             for rank, _ in results:
                 cache.pop(0)  # keep the cache a fixed size
                 cache.append(
-                    self.call_async(rank=rank, action='_async_otf_bt_gen',
+                    self.call_async(rank=rank, action='_async_otf_gen',
                                     result_type='otf_gen', fetch_all=True,
-                                    batch=self.get_batch('otf'))
+                                    batch=self.get_batch(iter_name))
                 )
             for _, result in results:
-                yield result
+                yield result[0]
 
-    def _async_otf_bt_gen(self, rank, device_id, batch):
+    def _async_otf_gen(self, rank, device_id, batch):
         """
         On the fly back-translation (generation step).
         """
@@ -634,7 +729,6 @@ class TrainerMT(MultiprocessingEventLoop):
             results.append(dict([
                  ('sent1', sent1), ('len1', len1), ('attr1', attr1),
                  ('sent2', sent2), ('len2', len2), ('attr2', attr2),
-                 ('sent3', sent1), ('len3', len1), ('attr3', attr1),
             ]))
 
         return (rank, results)

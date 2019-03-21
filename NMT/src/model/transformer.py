@@ -21,6 +21,8 @@ from ..sequence_generator import SequenceGenerator
 
 from . import LatentState
 
+from IPython import embed
+
 
 logger = getLogger()
 
@@ -40,7 +42,8 @@ class TransformerEncoder(nn.Module):
         embed_dim = args.encoder_embed_dim
         self.embeddings = Embedding(self.n_words, embed_dim,
                                     padding_idx=args.pad_index)
-        self.style_embeddings = Embedding(self.n_styles, embed_dim, padding_idx=-1)
+        self.style_embeddings = Embedding(self.n_styles+1, embed_dim,
+                                          padding_idx=self.n_styles)
 
         self.freeze_enc_emb = args.freeze_enc_emb
 
@@ -151,7 +154,6 @@ class TransformerDecoder(nn.Module):
         for k in range(args.decoder_layers):
             self.layers.append(TransformerDecoderLayer(args))
 
-
         # projection layers
         proj = nn.Linear(self.emb_dim, self.n_words)
         if self.share_decpro_emb:
@@ -161,26 +163,39 @@ class TransformerDecoder(nn.Module):
 
         # TODO: implement decoder output proj style-specific biases here
 
-    def forward(self, encoded, y, tgt_attributes, one_hot=False, incremental_state=None):
+        self.smooth = nn.Softmax(dim=2)
+
+    def forward(self, encoded, y, tgt_attributes, one_hot=False,
+                incremental_state=None, soft=False, first_step=False):
         assert not one_hot, 'one_hot=True has not been implemented for transformer'
+        if soft:
+            assert incremental_state is not None
 
         prev_output_tokens = y  # T x B
         encoder_out = encoded.dec_input
         embed_tokens = self.embeddings
         proj_layer = self.proj
-
-        # embed style
-        style_embed = self.style_embeddings(tgt_attributes)
-        style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
-
+        
         # embed tokens and replace <BOS> w/ style_embed
         if incremental_state is not None:
-            prev_output_tokens = prev_output_tokens[-1:, :]  # only keep last time step
-        prev_output_embed = embed_tokens(prev_output_tokens)
-        prev_output_embed[0] = style_embed
+            if first_step:
+                style_embed = self.style_embeddings(tgt_attributes)
+                style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
+                prev_output_embed = style_embed.unsqueeze(0)
+            elif soft:
+                prev_output_embed = torch.matmul(prev_output_tokens,
+                                                 self.embeddings.weight)
+            else:
+                prev_output_tokens = prev_output_tokens[-1:, :]  # only keep last time step
+                prev_output_embed = embed_tokens(prev_output_tokens)
+        else:
+            style_embed = self.style_embeddings(tgt_attributes)
+            style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
+            prev_output_embed = embed_tokens(prev_output_tokens)
+            prev_output_embed[0] = style_embed
 
         # embed positions
-        positions = self.embed_positions(prev_output_tokens, incremental_state)
+        positions = self.embed_positions(prev_output_tokens, incremental_state, soft=soft)
 
         # embed tokens and positions
         x = self.embed_scale * prev_output_embed
@@ -270,7 +285,8 @@ class TransformerDecoder(nn.Module):
 
             # previous word embeddings
             scores = self.forward(encoded, decoded[:cur_len], tgt_attributes,
-                                  one_hot, incremental_state)
+                                  one_hot, incremental_state,
+                                  first_step=(cur_len == 1))
             scores = scores.data[-1, :, :]  # T x B x V -> B x V
 
             # select next words: sample or one-hot
@@ -294,8 +310,83 @@ class TransformerDecoder(nn.Module):
 
         return decoded[:cur_len], lengths, one_hot
 
-    def generate_beam(self, encoded, tgt_attributes, beam_size=20, max_len=175,
-                      sample=False, temperature=None):
+    def generate_soft(self, encoded, tgt_attributes, max_len=200,
+                      temperature=None):
+        """
+        Generate a sentence from a given initial state.
+        Input:
+            - FloatTensor of size (batch_size, hidden_dim) representing
+              sentences encoded in the latent space
+        Output:
+            - LongTensor of size (seq_len, batch_size), word indices
+            - LongTensor of size (batch_size,), sentence x_len
+        """
+        assert temperature is not None
+
+        encoder_out = encoded.dec_input
+        latent = encoder_out['encoder_out']
+
+        x_len = encoded.input_len
+        is_cuda = latent.is_cuda
+        one_hot = None
+
+        # check inputs
+        assert latent.size() == (x_len.max(), x_len.size(0), self.emb_dim)
+
+        # initialize generated sentences batch
+        slen, bs = latent.size(0), latent.size(1)
+        assert x_len.max() == slen and x_len.size(0) == bs
+        cur_len = 1
+
+        prev_output = torch.zeros(1, bs, self.n_words)
+
+        unfinished_sents = torch.LongTensor(bs).fill_(1)
+        lengths = torch.LongTensor(bs).fill_(1)
+        if is_cuda:
+            prev_output = prev_output.cuda()
+            unfinished_sents = unfinished_sents.cuda()
+            lengths = lengths.cuda()
+            
+        one_hot_pad = torch.zeros(bs, self.n_words).cuda()
+        one_hot_pad[:, self.pad_index] = 1
+
+        decoded = [prev_output]
+        incremental_state = {}
+        while cur_len < max_len:
+            # previous word embeddings
+            scores = self.forward(encoded, prev_output, tgt_attributes,
+                                  one_hot, incremental_state, soft=True,
+                                  first_step=(cur_len == 1))
+
+            scores_ = scores.data[-1, :, :]  # T x B x V -> B x V
+
+            next_words = torch.topk(scores_, 1)[1].squeeze(1)
+            assert next_words.size() == (bs,)
+
+            soft_next_words = self.smooth(scores / temperature)
+
+            prev_output = soft_next_words * unfinished_sents.view(1, -1, 1).float() \
+                            +  one_hot_pad * (1 - unfinished_sents.view(1, -1, 1).float())
+
+            lengths.add_(unfinished_sents)
+            unfinished_sents.mul_(next_words.ne(self.eos_index).long())
+            cur_len += 1
+
+            # stop when there is a </s> in each sentence
+            if unfinished_sents.max() == 0:
+                break
+
+            if cur_len == max_len:
+                one_hot_eos = torch.zeros(bs, self.n_words).cuda()
+                one_hot_eos[:, self.eos_index] = 1
+                prev_output = one_hot_eos * unfinished_sents.view(1, -1, 1).float() \
+                                +  one_hot_pad * (1 - unfinished_sents.view(1, -1, 1).float())
+
+            decoded.append(prev_output)
+
+        return torch.cat(decoded), lengths, one_hot
+
+    def generate_beam(self, encoded, tgt_attributes, beam_size=20, max_len=175, sample=False, temperature=None):
         """
         Generate a sentence from a given initial state.
         Input:

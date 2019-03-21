@@ -349,8 +349,6 @@ def sample_style(params, curr_styles):
     """
     Sample random style.
     """
-    print('Inside sample_style(...)')
-
     modulo_constants = params.modulo_constants.repeat(curr_styles.shape[0], 1)
     start_indices = params.start_indices.repeat(curr_styles.shape[0], 1)
     integer_divisors = params.integer_divisors.repeat(curr_styles.shape[0], 1)

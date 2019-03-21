@@ -70,10 +70,13 @@ class SinusoidalPositionalEmbedding(nn.Module):
             emb[padding_idx, :] = 0
         return emb
 
-    def forward(self, input, incremental_state=None):
+    def forward(self, input, incremental_state=None, soft=False):
         """Input is expected to be of size [seqlen x bsz]."""
         # recompute/expand embeddings if needed
-        seq_len, bsz = input.size()
+        if soft:
+            seq_len, bsz, _ = input.size()
+        else:
+            seq_len, bsz = input.size()
         max_pos = self.padding_idx + 1 + seq_len
         if seq_len > self.weights.size(0):
             self.weights = SinusoidalPositionalEmbedding.get_embedding(

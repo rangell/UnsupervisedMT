@@ -16,6 +16,7 @@ from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 from . import LatentState, LSTM_PARAMS, BILSTM_PARAMS
 from .discriminator import Discriminator
 from .lm import LM
+from .feature_extractor import ConvFeatureExtractor
 from ..modules.label_smoothed_cross_entropy import LabelSmoothedCrossEntropyLoss
 from .pretrain_embeddings import initialize_embeddings
 from ..utils import get_mask, reload_model
@@ -765,12 +766,20 @@ def build_attention_model(params, data, cuda=True):
         encoder, decoder = build_transformer_enc_dec(params)
     else:
         encoder, decoder = build_lstm_enc_dec(params)
+
     if params.lambda_dis not in ["0", "-1"]:
         logger.info("============ Building attention model - Discriminator ...")
         discriminator = Discriminator(params)
         logger.info("")
     else:
         discriminator = None
+
+    if params.lambda_feat_extr not in ["0", "-1"]:
+        logger.info("============ Building attention model - Feature extractor ...")
+        feat_extr = ConvFeatureExtractor(params, encoder)
+        logger.info("")
+    else:
+        feat_extr = None
 
     # loss function for decoder reconstruction
     loss_fn = []
@@ -802,6 +811,8 @@ def build_attention_model(params, data, cuda=True):
         decoder.cuda()
         if discriminator is not None:
             discriminator.cuda()
+        if feat_extr is not None:
+            feat_extr.cuda()
         if lm is not None:
             lm.cuda()
 
@@ -842,7 +853,9 @@ def build_attention_model(params, data, cuda=True):
     logger.info("Encoder: {}".format(encoder))
     logger.info("Decoder: {}".format(decoder))
     logger.info("Discriminator: {}".format(discriminator))
-    logger.info("LM: {}".format(lm))
+    logger.info("Feature extractor: {}".format(feat_extr))
+    logger.info("Language model: {}".format(lm))
     logger.info("")
 
-    return encoder, decoder, discriminator, lm
+
+    return encoder, decoder, discriminator, feat_extr, lm
