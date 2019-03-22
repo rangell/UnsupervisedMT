@@ -275,18 +275,36 @@ def main(params):
 
         while trainer.n_sentences < params.epoch_size:
 
-            #if params.lambda_adv > 0:
-            #    trainer.enc_dec_adv_step(params, params.lambda_adv)
-            #    print("Finished enc/dec adv step!!!")
-            #    exit()
+            if params.lambda_xe_ae > 0:
+                trainer.enc_dec_ae_step(params.lambda_xe_ae)
 
-            # Optimize feature extractor
+            if params.lambda_xe_otf_bt > 0:
+                # start on-the-fly batch generations
+                if not getattr(params, 'started_otf_bt_batch_gen', False):
+                    trainer.otf_before_gen(
+                            iter_name='otf_bt',
+                            num_proc=1)
+                    otf_bt_iterator = trainer.otf_gen_async(iter_name='otf_bt')
+                    params.started_otf_bt_batch_gen = True
+
+                # update model parameters on subprocesses
+                if trainer.n_iter % params.otf_bt_sync_params_every == 0:
+                    trainer.otf_sync_params(iter_name='otf_bt')
+
+                # get training batch from CPU
+                before_gen = time.time()
+                batch = next(otf_bt_iterator)
+                trainer.gen_time += time.time() - before_gen
+
+                # optimize feature extractor
+                trainer.enc_dec_bt_step(params, batch, params.lambda_xe_otf_bt)
+
             if params.lambda_feat_extr > 0:
                 # start on-the-fly batch generations
                 if not getattr(params, 'started_otf_fe_batch_gen', False):
                     trainer.otf_before_gen(
                             iter_name='otf_fe',
-                            num_proc=(params.otf_num_processes//2))
+                            num_proc=1)
                     otf_fe_iterator = trainer.otf_gen_async(iter_name='otf_fe')
                     params.started_otf_fe_batch_gen = True
 
@@ -302,46 +320,10 @@ def main(params):
                 # optimize feature extractor
                 trainer.feat_extr_step(batch, params.lambda_feat_extr)
 
-                print("Finished feat_extr_step!!!!")
-                exit()
+            if params.lambda_adv > 0:
+                trainer.enc_dec_adv_step(params, params.lambda_adv)
 
-
-            batch = trainer.get_batch('feat_extr')
-            feat_extr = trainer.feat_extr
-
-            out = feat_extr(batch[0].cuda(), batch[1], batch[2].cuda())
-
-            C = cost_matrix(out, out)
-            ipot_cost = IPOT(out, out)
-
-            embed()
-            exit()
-
-            if params.lambda_xe_ae > 0:
-                trainer.enc_dec_ae_step(params.lambda_xe_ae)
-
-
-
-
-
-
-            # start on-the-fly batch generations
-            if not getattr(params, 'started_otf_batch_gen', False):
-                otf_iterator = trainer.otf_bt_gen_async()
-                params.started_otf_batch_gen = True
-                print("Initialized otf_bt_gen_async")
-
-            # update model parameters on subprocesses
-            if trainer.n_iter % params.otf_sync_params_every == 0:
-                trainer.otf_sync_params()
-                print("Synced parameters")
-
-            # get training batch from CPU
-            before_gen = time.time()
-            batch = next(otf_iterator)
-            trainer.gen_time += time.time() - before_gen
-
-            embed()
+            print("Ran one whole training step!")
             exit()
 
 ###############################################################################

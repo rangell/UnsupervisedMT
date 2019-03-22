@@ -163,6 +163,9 @@ class TransformerDecoder(nn.Module):
 
         # TODO: implement decoder output proj style-specific biases here
 
+        window_width = 5
+        self.pool = nn.MaxPool1d(window_width, stride=window_width,
+                                 ceil_mode=True)
         self.smooth = nn.Softmax(dim=2)
 
     def forward(self, encoded, y, tgt_attributes, one_hot=False,
@@ -172,9 +175,21 @@ class TransformerDecoder(nn.Module):
             assert incremental_state is not None
 
         prev_output_tokens = y  # T x B
-        encoder_out = encoded.dec_input
         embed_tokens = self.embeddings
         proj_layer = self.proj
+
+        # handle encoder outputs and max-pooling
+        mask_value = -1e12
+        enc_out = encoded.dec_input['encoder_out'].clone() # make sure to clone so we backprop
+        assert not torch.any(enc_out <= mask_value)
+        pad_mask = encoded.dec_input['encoder_padding_mask'].permute(1, 0)
+        pad_mask = pad_mask.unsqueeze(2)
+        enc_out.masked_fill_(pad_mask, mask_value)
+        enc_out = enc_out.permute(1, 2, 0)
+        enc_out = self.pool(enc_out)
+        pad_mask = torch.any(enc_out == mask_value, dim=1)
+        enc_out = enc_out.permute(2, 0, 1)
+
         
         # embed tokens and replace <BOS> w/ style_embed
         if incremental_state is not None:
@@ -207,8 +222,8 @@ class TransformerDecoder(nn.Module):
         for layer in self.layers:
             x, attn = layer(
                 x,
-                encoder_out['encoder_out'],
-                encoder_out['encoder_padding_mask'],
+                enc_out,
+                pad_mask,
                 incremental_state=incremental_state,
             )
 

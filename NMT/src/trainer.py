@@ -487,9 +487,49 @@ class TrainerMT(MultiprocessingEventLoop):
         self.stats['processed_s'] += len_.size(0)
         self.stats['processed_w'] += len_.sum()
 
-    def enc_dec_bt_step(self):
+    def enc_dec_bt_step(self, params, batch, lambda_xe):
         # essentially otf_bt(...) called in AE mode (yes AE mode, not a typo)
-        pass
+        loss_fn = self.decoder.loss_fn[0]
+        self.encoder.train()
+        self.decoder.train()
+
+        sent1 = batch['sent1'].cuda()
+        len1 = batch['len1']
+        attr1 = batch['attr1'].cuda()
+
+        sent2 = batch['sent2'].cuda()
+        len2 = batch['len2']
+        attr2 = batch['attr2'].cuda()
+
+        # encode previously generated sentence
+        encoded = self.encoder(sent2, len2, attr2)
+
+        # cross-entropy scores / loss
+        scores = self.decoder(encoded, sent1[:-1], attr1)
+        xe_loss = loss_fn(scores.view(-1, params.n_words), sent1[1:].view(-1))
+        self.stats['xe_bt_costs'].append(xe_loss.item())
+        assert lambda_xe > 0
+        loss = lambda_xe * xe_loss
+
+        # check NaN
+        if (loss != loss).data.any():
+            logger.error("NaN detected")
+            exit()
+
+        # optimizer
+        assert params.otf_update_enc or params.otf_update_dec
+        to_update = []
+        if params.otf_update_enc:
+            to_update.append('enc')
+        if params.otf_update_dec:
+            to_update.append('dec')
+        self.zero_grad(to_update)
+        loss.backward()
+        self.update_params(to_update)
+
+        # number of processed sentences / words
+        self.stats['processed_s'] += batch['len1'].size(0)
+        self.stats['processed_w'] += batch['len1'].sum()
 
     def feat_extr_step(self, batch, lambda_feat_extr):
         assert lambda_feat_extr > 0
