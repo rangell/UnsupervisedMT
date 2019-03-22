@@ -275,9 +275,24 @@ def main(params):
 
         while trainer.n_sentences < params.epoch_size:
 
+            # discriminator training
+            if params.n_dis > 0:
+                raise NotImplementedError()
+            for _ in range(params.n_dis):
+                trainer.discriminator_step()
+
+            # language model training
+            if params.lambda_lm > 0:
+                raise NotImplementedError()
+                for _ in range(params.lm_after):
+                    for lang in params.langs:
+                        trainer.lm_step(lang)
+
+            # auto-encoder training
             if params.lambda_xe_ae > 0:
                 trainer.enc_dec_ae_step(params.lambda_xe_ae)
 
+            # back-translation training
             if params.lambda_xe_otf_bt > 0:
                 # start on-the-fly batch generations
                 if not getattr(params, 'started_otf_bt_batch_gen', False):
@@ -299,6 +314,7 @@ def main(params):
                 # optimize feature extractor
                 trainer.enc_dec_bt_step(params, batch, params.lambda_xe_otf_bt)
 
+            # adversarial optimization of feature extractor
             if params.lambda_feat_extr > 0:
                 # start on-the-fly batch generations
                 if not getattr(params, 'started_otf_fe_batch_gen', False):
@@ -320,62 +336,12 @@ def main(params):
                 # optimize feature extractor
                 trainer.feat_extr_step(batch, params.lambda_feat_extr)
 
+            # adversarial optimization of generator
             if params.lambda_adv > 0:
                 trainer.enc_dec_adv_step(params, params.lambda_adv)
 
             print("Ran one whole training step!")
             exit()
-
-###############################################################################
-
-
-            # discriminator training
-            if params.n_dis > 0:
-                raise NotImplementedError()
-            for _ in range(params.n_dis):
-                trainer.discriminator_step()
-
-            # language model training
-            if params.lambda_lm > 0:
-                raise NotImplementedError()
-                for _ in range(params.lm_after):
-                    for lang in params.langs:
-                        trainer.lm_step(lang)
-
-            # autoencoder training
-            if params.lambda_xe_ae > 0:
-                for lang in params.mono_directions:
-                    trainer.enc_dec_step(lang, lang, params.lambda_xe_mono)
-
-            # AE - MT training (on the fly back-translation)
-            if params.lambda_xe_otfd > 0 or params.lambda_xe_otfa > 0:
-
-                # start on-the-fly batch generations
-                if not getattr(params, 'started_otf_batch_gen', False):
-                    otf_iterator = trainer.otf_bt_gen_async()
-                    params.started_otf_batch_gen = True
-
-                # update model parameters on subprocesses
-                if trainer.n_iter % params.otf_sync_params_every == 0:
-                    trainer.otf_sync_params()
-
-                # get training batch from CPU
-                before_gen = time.time()
-                batches = next(otf_iterator)
-                trainer.gen_time += time.time() - before_gen
-
-                # training
-                for batch in batches:
-                    lang1, lang2, lang3 = batch['lang1'], batch['lang2'], batch['lang3']
-                    # 2-lang back-translation - autoencoding
-                    if lang1 != lang2 == lang3:
-                        trainer.otf_bt(batch, params.lambda_xe_otfa, params.otf_backprop_temperature)
-                    # 2-lang back-translation - parallel data
-                    elif lang1 == lang3 != lang2:
-                        trainer.otf_bt(batch, params.lambda_xe_otfd, params.otf_backprop_temperature)
-                    # 3-lang back-translation - parallel data
-                    elif lang1 != lang2 and lang2 != lang3 and lang1 != lang3:
-                        trainer.otf_bt(batch, params.lambda_xe_otfd, params.otf_backprop_temperature)
 
             trainer.iter()
 
