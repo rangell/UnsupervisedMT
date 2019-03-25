@@ -163,7 +163,7 @@ class TransformerDecoder(nn.Module):
 
         # TODO: implement decoder output proj style-specific biases here
 
-        window_width = 5
+        window_width = args.window_width
         self.pool = nn.MaxPool1d(window_width, stride=window_width,
                                  ceil_mode=True)
         self.smooth = nn.Softmax(dim=2)
@@ -179,18 +179,25 @@ class TransformerDecoder(nn.Module):
         proj_layer = self.proj
 
         # handle encoder outputs and max-pooling
-        mask_value = -1e12
-        enc_out = encoded.dec_input['encoder_out'].clone() # make sure to clone so we backprop
-        assert not torch.any(enc_out <= mask_value)
-        pad_mask = encoded.dec_input['encoder_padding_mask'].permute(1, 0)
-        pad_mask = pad_mask.unsqueeze(2)
-        enc_out.masked_fill_(pad_mask, mask_value)
-        enc_out = enc_out.permute(1, 2, 0)
-        enc_out = self.pool(enc_out)
-        pad_mask = torch.any(enc_out == mask_value, dim=1)
-        enc_out = enc_out.permute(2, 0, 1)
+        if incremental_state is not None and not first_step:
+            enc_out = self._enc_out
+            pad_mask = self._pad_mask
+        else:
+            mask_value = -1e12
+            #enc_out = encoded.dec_input['encoder_out'].clone() # make sure to clone so we backprop
+            enc_out = encoded.dec_input['encoder_out'] # make sure to clone so we backprop
+            assert not torch.any(enc_out <= mask_value)
+            pad_mask = encoded.dec_input['encoder_padding_mask'].permute(1, 0)
+            pad_mask = pad_mask.unsqueeze(2)
+            enc_out.masked_fill_(pad_mask, mask_value)
+            enc_out = enc_out.permute(1, 2, 0)
+            enc_out = self.pool(enc_out)
+            pad_mask = torch.any(enc_out == mask_value, dim=1)
+            enc_out = enc_out.permute(2, 0, 1)
+            if incremental_state is not None:
+                self._enc_out = enc_out
+                self._pad_mask = pad_mask
 
-        
         # embed tokens and replace <BOS> w/ style_embed
         if incremental_state is not None:
             if first_step:
@@ -198,8 +205,7 @@ class TransformerDecoder(nn.Module):
                 style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
                 prev_output_embed = style_embed.unsqueeze(0)
             elif soft:
-                prev_output_embed = torch.matmul(prev_output_tokens,
-                                                 self.embeddings.weight)
+                prev_output_embed = y
             else:
                 prev_output_tokens = prev_output_tokens[-1:, :]  # only keep last time step
                 prev_output_embed = embed_tokens(prev_output_tokens)
@@ -353,7 +359,7 @@ class TransformerDecoder(nn.Module):
         assert x_len.max() == slen and x_len.size(0) == bs
         cur_len = 1
 
-        prev_output = torch.zeros(1, bs, self.n_words)
+        prev_output = torch.zeros(1, bs, self.emb_dim)
 
         unfinished_sents = torch.LongTensor(bs).fill_(1)
         lengths = torch.LongTensor(bs).fill_(1)
@@ -397,6 +403,7 @@ class TransformerDecoder(nn.Module):
                 prev_output = one_hot_eos * unfinished_sents.view(1, -1, 1).float() \
                                 +  one_hot_pad * (1 - unfinished_sents.view(1, -1, 1).float())
 
+            prev_output = torch.matmul(prev_output, self.embeddings.weight)
             decoded.append(prev_output)
 
         return torch.cat(decoded), lengths, one_hot

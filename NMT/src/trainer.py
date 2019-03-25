@@ -130,6 +130,8 @@ class TrainerMT(MultiprocessingEventLoop):
             'processed_w': 0,
             'xe_ae_costs': [],
             'xe_bt_costs': [],
+            'ppl_ae_costs': [],
+            'ppl_bt_costs': [],
             'ipot_fe_costs': [],
             'ipot_adv_costs': [],
             'lme_costs': [],
@@ -149,7 +151,9 @@ class TrainerMT(MultiprocessingEventLoop):
 
         # initialize lambda coefficients and their configurations
         parse_lambda_config(params, 'lambda_xe_ae')
+        parse_lambda_config(params, 'lambda_ipot_ae')
         parse_lambda_config(params, 'lambda_xe_otf_bt')
+        parse_lambda_config(params, 'lambda_ipot_otf_bt')
         parse_lambda_config(params, 'lambda_lm')
         parse_lambda_config(params, 'lambda_dis')
         parse_lambda_config(params, 'lambda_feat_extr')
@@ -433,6 +437,31 @@ class TrainerMT(MultiprocessingEventLoop):
         # number of processed sentences / words
         self.stats['processed_s'] += len1.size(0)
         self.stats['processed_w'] += len1.sum()
+
+    def gen_st_batch(self):
+        params = self.params
+        self.encoder.eval()
+        self.decoder.eval()
+
+        with torch.no_grad():
+            sent1, len1, attr1 = self.get_batch('gen_st')
+
+            encoded = self.encoder(sent1.cuda(), len1, attr1.cuda())
+            max_len = int(1.5 * len1.max() + 10)
+
+            attr2 = sample_style(params, attr1)
+            attr2 = attr2.cuda()
+
+            if params.otf_sample == -1:
+                sent2, len2, _ = self.decoder.generate(encoded, attr2, max_len=max_len)
+            else:
+                sent2, len2, _ = self.decoder.generate(encoded, attr2, max_len=max_len,
+                                                       sample=True, temperature=params.otf_sample)
+
+        return dict([
+                 ('sent1', sent1), ('len1', len1), ('attr1', attr1),
+                 ('sent2', sent2), ('len2', len2), ('attr2', attr2),
+            ])
     
     def enc_dec_ae_step(self, lambda_xe):
         # essentially enc_dec_step(...) called in AE mode
@@ -458,6 +487,7 @@ class TrainerMT(MultiprocessingEventLoop):
         xe_loss = loss_fn(scores.view(-1, n_words), sent_[1:].view(-1))
 
         self.stats['xe_ae_costs'].append(xe_loss.item())
+        self.stats['ppl_ae_costs'].append(torch.exp(xe_loss).item())
 
         # discriminator feedback loss
         if params.lambda_dis:
@@ -487,8 +517,9 @@ class TrainerMT(MultiprocessingEventLoop):
         self.stats['processed_s'] += len_.size(0)
         self.stats['processed_w'] += len_.sum()
 
-    def enc_dec_bt_step(self, params, batch, lambda_xe):
+    def enc_dec_bt_step(self, batch, lambda_xe):
         # essentially otf_bt(...) called in AE mode (yes AE mode, not a typo)
+        params = self.params
         loss_fn = self.decoder.loss_fn[0]
         self.encoder.train()
         self.decoder.train()
@@ -508,6 +539,7 @@ class TrainerMT(MultiprocessingEventLoop):
         scores = self.decoder(encoded, sent1[:-1], attr1)
         xe_loss = loss_fn(scores.view(-1, params.n_words), sent1[1:].view(-1))
         self.stats['xe_bt_costs'].append(xe_loss.item())
+        self.stats['ppl_bt_costs'].append(torch.exp(xe_loss).item())
         assert lambda_xe > 0
         loss = lambda_xe * xe_loss
 
@@ -534,6 +566,10 @@ class TrainerMT(MultiprocessingEventLoop):
     def feat_extr_step(self, batch, lambda_feat_extr):
         assert lambda_feat_extr > 0
 
+        if batch['len2'].min() < 3:
+            logger.warning("Missed feat_extr step")
+            return
+
         real_reps = self.feat_extr(batch['sent1'].cuda(), batch['len1'],
                                    batch['attr1'].cuda())
         fake_reps = self.feat_extr(batch['sent2'].cuda(), batch['len2'],
@@ -548,27 +584,36 @@ class TrainerMT(MultiprocessingEventLoop):
         loss.backward()
         self.update_params(['feat_extr'])
 
-    def enc_dec_adv_step(self, params, lambda_adv):
+    def enc_dec_adv_step(self, batch, lambda_adv):
         assert lambda_adv > 0
 
+        if batch['len2'].min() < 3:
+            logger.warning("Missed adv step")
+            return
+
+        params = self.params
         self.encoder.train()
         self.decoder.train()
         self.feat_extr.eval()
 
-        sent1, len1, attr1 = self.get_batch("encdec_adv")
+        sent1 = batch['sent1'].cuda()
+        len1 = batch['len1']
+        attr1 = batch['attr1'].cuda()
 
-        attr2 = sample_style(params, attr1)
+        sent2 = batch['sent2'].cuda()
+        len2 = batch['len2']
+        attr2 = batch['attr2'].cuda()
 
-        sent1 = sent1.cuda()
-        attr1 = attr1.cuda()
-        attr2 = attr2.cuda()
-
-        # soft argmax / gumbel softmax...
+        # encode previously generated sentence
         encoded = self.encoder(sent1, len1, attr1)
-        max_len = int(1.5 * len1.max() + 10)
 
-        soft_sent2, len2, _ = self.decoder.generate_soft(encoded,
-                attr2, max_len=max_len, temperature=params.otf_sample)
+        # cross-entropy scores / loss
+        scores = self.decoder(encoded, sent2[:-1], attr2)
+        smooth_scores = self.decoder.smooth(scores)
+        soft_sent2 = torch.matmul(smooth_scores, self.decoder.embeddings.weight)
+        soft_sent2 = torch.cat([torch.zeros(1, soft_sent2.size(1),
+                                            soft_sent2.size(2)).cuda(),
+                                soft_sent2])
 
         real_reps = self.feat_extr(sent1, len1, attr1)
         fake_reps = self.feat_extr(soft_sent2, len2, attr2, soft=True)
@@ -702,10 +747,11 @@ class TrainerMT(MultiprocessingEventLoop):
         set_flat_params(self.decoder, decoder_params)
 
     def otf_before_gen(self, iter_name=None, num_proc=None):
+        num_proc_left = len(self.subprocess_ids)
         assert iter_name is not None
         assert iter_name not in self.ranks.keys()
         assert num_proc is not None
-        assert len(self.subprocess_ids) > 0
+        assert num_proc_left > 0
 
         if num_proc == -1:
             self.ranks[iter_name] = self.subprocess_ids[:]
@@ -714,8 +760,8 @@ class TrainerMT(MultiprocessingEventLoop):
             self.ranks[iter_name] = self.subprocess_ids[:num_proc]
             self.subprocess_ids = self.subprocess_ids[num_proc:]
 
-        if num_proc > len(self.subprocess_ids):
-            logger.warning("Can only provide {}/{} requested processes".format(len(self.subprocess_ids), num_proc))
+        if num_proc > num_proc_left:
+            logger.warning("Can only provide {}/{} requested processes".format(num_proc_left, num_proc))
         else:
             logger.info("Allocating {} processes to {} iterator".format(num_proc, iter_name))
 
@@ -841,13 +887,12 @@ class TrainerMT(MultiprocessingEventLoop):
         self.stats['processed_s'] += len3.size(0)
         self.stats['processed_w'] += len3.sum()
 
-    def iter(self):
+    def iter(self, n_batches):
         """
         End of iteration.
         """
         self.n_iter += 1
         self.n_total_iter += 1
-        n_batches = len(self.params.mono_directions) + len(self.params.para_directions) + len(self.params.back_directions) + len(self.params.pivo_directions)
         self.n_sentences += n_batches * self.params.batch_size
         self.print_stats()
         update_lambdas(self.params, self.n_total_iter)
@@ -860,20 +905,17 @@ class TrainerMT(MultiprocessingEventLoop):
         if self.n_iter % 50 == 0:
             mean_loss = [
                 ('DIS', 'dis_costs'),
+                ('XE-AE', 'xe_ae_costs'),
+                ('XE-BT', 'xe_bt_costs'),
+                ('PPL-AE', 'ppl_ae_costs'),
+                ('PPL-BT', 'ppl_bt_costs'),
+                ('IPOT-FE', 'ipot_fe_costs'),
+                ('IPOT-ADV', 'ipot_adv_costs'),
+                ('LME', 'lme_costs'),
+                ('LMD', 'lmd_costs'),
+                ('LMER', 'lmer_costs'),
+                ('ENC-L2', 'enc_norms')
             ]
-            for lang in self.params.mono_directions:
-                mean_loss.append(('XE-%s-%s' % (lang, lang), 'xe_costs_%s_%s' % (lang, lang)))
-            for lang1, lang2 in self.params.para_directions:
-                mean_loss.append(('XE-%s-%s' % (lang1, lang2), 'xe_costs_%s_%s' % (lang1, lang2)))
-            for lang1, lang2 in self.params.back_directions:
-                mean_loss.append(('XE-BT-%s-%s' % (lang1, lang2), 'xe_costs_bt_%s_%s' % (lang1, lang2)))
-            for lang1, lang2, lang3 in self.params.pivo_directions:
-                mean_loss.append(('XE-%s-%s-%s' % (lang1, lang2, lang3), 'xe_costs_%s_%s_%s' % (lang1, lang2, lang3)))
-            for lang in self.params.langs:
-                mean_loss.append(('LME-%s' % lang, 'lme_costs_%s' % lang))
-                mean_loss.append(('LMD-%s' % lang, 'lmd_costs_%s' % lang))
-                mean_loss.append(('LMER-%s' % lang, 'lmer_costs_%s' % lang))
-                mean_loss.append(('ENC-L2-%s' % lang, 'enc_norms_%s' % lang))
 
             s_iter = "%7i - " % self.n_iter
             s_stat = ' || '.join(['{}: {:7.4f}'.format(k, np.mean(self.stats[l]))
@@ -894,11 +936,8 @@ class TrainerMT(MultiprocessingEventLoop):
             s_lr = " - LR " + ",".join("{}={:.4e}".format(k, lr) for k, lr in lrs.items())
 
             # generation time
-            if len(self.params.pivo_directions) > 0:
-                s_time = " - Sentences generation time: % .2fs (%.2f%%)" % (self.gen_time, 100. * self.gen_time / diff)
-                self.gen_time = 0
-            else:
-                s_time = ""
+            s_time = " - Sentences generation time: % .2fs (%.2f%%)" % (self.gen_time, 100. * self.gen_time / diff)
+            self.gen_time = 0
 
             # log speed + stats
             logger.info(s_iter + s_speed + s_stat + s_lr + s_time)

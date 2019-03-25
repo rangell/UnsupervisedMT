@@ -293,16 +293,18 @@ def update_lambdas(params, n_total_iter):
     """
     Update all lambda coefficients.
     """
-    if params.lambda_xe_mono_config is not None:
-        params.lambda_xe_mono = update_lambda_value(params.lambda_xe_mono_config, n_total_iter)
-    if params.lambda_xe_para_config is not None:
-        params.lambda_xe_para = update_lambda_value(params.lambda_xe_para_config, n_total_iter)
-    if params.lambda_xe_back_config is not None:
-        params.lambda_xe_back = update_lambda_value(params.lambda_xe_back_config, n_total_iter)
-    if params.lambda_xe_otfd_config is not None:
-        params.lambda_xe_otfd = update_lambda_value(params.lambda_xe_otfd_config, n_total_iter)
-    if params.lambda_xe_otfa_config is not None:
-        params.lambda_xe_otfa = update_lambda_value(params.lambda_xe_otfa_config, n_total_iter)
+    if params.lambda_xe_ae_config is not None:
+        params.lambda_xe_ae = update_lambda_value(params.lambda_xe_ae_config, n_total_iter)
+    if params.lambda_ipot_ae_config is not None:
+        params.lambda_ipot_ae = update_lambda_value(params.lambda_ipot_ae_config, n_total_iter)
+    if params.lambda_xe_otf_bt_config is not None:
+        params.lambda_xe_otf_bt = update_lambda_value(params.lambda_xe_otf_bt_config, n_total_iter)
+    if params.lambda_ipot_otf_bt_config is not None:
+        params.lambda_ipot_otf_bt = update_lambda_value(params.lambda_ipot_otf_bt_config, n_total_iter)
+    if params.lambda_adv_config is not None:
+        params.lambda_adv = update_lambda_value(params.lambda_adv_config, n_total_iter)
+    if params.lambda_feat_extr_config is not None:
+        params.lambda_feat_extr = update_lambda_value(params.lambda_feat_extr_config, n_total_iter)
     if params.lambda_dis_config is not None:
         params.lambda_dis = update_lambda_value(params.lambda_dis_config, n_total_iter)
     if params.lambda_lm_config is not None:

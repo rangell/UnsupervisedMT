@@ -42,6 +42,8 @@ def get_parser():
                         help="Number of layers in the decoders")
     parser.add_argument("--hidden_dim", type=int, default=512,
                         help="Hidden layer size")
+    parser.add_argument("--window_width", type=int, default=5,
+                        help="Max-pool stride and window width on top of encoder outputs")
     parser.add_argument("--lstm_proj", type=bool_flag, default=False,
                         help="Projection layer between decoder LSTM and output layer")
     parser.add_argument("--dropout", type=float, default=0,
@@ -144,7 +146,7 @@ def get_parser():
                         help="Back-propagate through the encoder (-1 to disable, temperature otherwise)")
     parser.add_argument("--otf_bt_sync_params_every", type=int, default=1000, metavar="N",
                         help="Number of updates between synchronizing params")
-    parser.add_argument("--otf_fe_sync_params_every", type=int, default=10, metavar="N",
+    parser.add_argument("--otf_fe_sync_params_every", type=int, default=50, metavar="N",
                         help="Number of updates between synchronizing params")
     parser.add_argument("--otf_num_processes", type=int, default=30, metavar="N",
                         help="Number of processes to use for OTF generation")
@@ -172,8 +174,12 @@ def get_parser():
                         help="Sort sentences by size during the training")
     parser.add_argument("--lambda_xe_ae", type=str, default="0",
                         help="Cross-entropy reconstruction coefficient (autoencoding)")
+    parser.add_argument("--lambda_ipot_ae", type=str, default="0",
+                        help="IPOT reconstruction coefficient (autoencoding)")
     parser.add_argument("--lambda_xe_otf_bt", type=str, default="0",
                         help="Cross-entropy reconstruction coefficient (on-the-fly back-translation autoencoding data)")
+    parser.add_argument("--lambda_ipot_otf_bt", type=str, default="0",
+                        help="IPOT reconstruction coefficient (on-the-fly back-translation autoencoding data)")
     parser.add_argument("--lambda_dis", type=str, default="0",
                         help="Discriminator loss coefficient")
     parser.add_argument("--lambda_feat_extr", type=str, default="0",
@@ -274,6 +280,7 @@ def main(params):
         trainer.n_sentences = 0
 
         while trainer.n_sentences < params.epoch_size:
+            n_batches = 0
 
             # discriminator training
             if params.n_dis > 0:
@@ -288,65 +295,36 @@ def main(params):
                     for lang in params.langs:
                         trainer.lm_step(lang)
 
+            # generate on-the-fly batch
+            before_gen = time.time()
+            st_batch = trainer.gen_st_batch()
+            trainer.gen_time += time.time() - before_gen
+
             # auto-encoder training
             if params.lambda_xe_ae > 0:
+                n_batches += 1
                 trainer.enc_dec_ae_step(params.lambda_xe_ae)
 
             # back-translation training
             if params.lambda_xe_otf_bt > 0:
-                # start on-the-fly batch generations
-                if not getattr(params, 'started_otf_bt_batch_gen', False):
-                    trainer.otf_before_gen(
-                            iter_name='otf_bt',
-                            num_proc=1)
-                    otf_bt_iterator = trainer.otf_gen_async(iter_name='otf_bt')
-                    params.started_otf_bt_batch_gen = True
-
-                # update model parameters on subprocesses
-                if trainer.n_iter % params.otf_bt_sync_params_every == 0:
-                    trainer.otf_sync_params(iter_name='otf_bt')
-
-                # get training batch from CPU
-                before_gen = time.time()
-                batch = next(otf_bt_iterator)
-                trainer.gen_time += time.time() - before_gen
-
-                # optimize feature extractor
-                trainer.enc_dec_bt_step(params, batch, params.lambda_xe_otf_bt)
+                n_batches += 1
+                trainer.enc_dec_bt_step(st_batch, params.lambda_xe_otf_bt)
 
             # adversarial optimization of feature extractor
             if params.lambda_feat_extr > 0:
-                # start on-the-fly batch generations
-                if not getattr(params, 'started_otf_fe_batch_gen', False):
-                    trainer.otf_before_gen(
-                            iter_name='otf_fe',
-                            num_proc=1)
-                    otf_fe_iterator = trainer.otf_gen_async(iter_name='otf_fe')
-                    params.started_otf_fe_batch_gen = True
-
-                # update model parameters on subprocesses
-                if trainer.n_iter % params.otf_fe_sync_params_every == 0:
-                    trainer.otf_sync_params(iter_name='otf_fe')
-
-                # get training batch from CPU
-                before_gen = time.time()
-                batch = next(otf_fe_iterator)
-                trainer.gen_time += time.time() - before_gen
-
-                # optimize feature extractor
-                trainer.feat_extr_step(batch, params.lambda_feat_extr)
+                n_batches += 1
+                trainer.feat_extr_step(st_batch, params.lambda_feat_extr)
 
             # adversarial optimization of generator
             if params.lambda_adv > 0:
-                trainer.enc_dec_adv_step(params, params.lambda_adv)
+                n_batches += 1
+                trainer.enc_dec_adv_step(st_batch, params.lambda_adv)
 
-            print("Ran one whole training step!")
-            exit()
-
-            trainer.iter()
+            trainer.iter(n_batches)
 
         # end of epoch
         logger.info("====================== End of epoch %i ======================" % trainer.epoch)
+        exit()
 
         # evaluate discriminator / perplexity / BLEU
         scores = evaluator.run_all_evals(trainer.epoch)
