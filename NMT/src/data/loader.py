@@ -448,17 +448,16 @@ def check_all_data_params(params):
     assert os.path.isfile(params.metadata_filename)
     params.style_metadata = json.load(open(params.metadata_filename, 'r'))
     params.styles = []
-    for attr_dict in params.style_metadata['attributes']:
-        params.styles += attr_dict[list(attr_dict.keys())[0]]
+    for _, attr_list in params.style_metadata['attributes'].items():
+        params.styles += attr_list
     params.n_styles = len(params.styles)
     params.id2style = {k : v for k, v in enumerate(params.styles)}
     params.style2id = {k : v for v, k in params.id2style.items()}
 
     # style sampling variables
     params.modulo_constants = []
-    for attribute_dict in params.style_metadata['attributes']:
-        key = list(attribute_dict.keys())[0]
-        params.modulo_constants.append(len(attribute_dict[key]))
+    for _, attr_list in params.style_metadata['attributes'].items():
+        params.modulo_constants.append(len(attr_list))
     params.n_attributes = len(params.modulo_constants)
     params.n_uniq_styles = reduce(mul, params.modulo_constants, 1)
     params.start_indices = [sum(params.modulo_constants[:i]) 

@@ -100,8 +100,8 @@ class TrainerMT(MultiprocessingEventLoop):
         # define validation metrics / stopping criterion used for early stopping
         logger.info("Stopping criterion: %s" % params.stopping_criterion)
         if params.stopping_criterion == '':
-            for data_type in ['valid', 'test']:
-                self.VALIDATION_METRICS.append('self_bleu_%s' % (data_type))
+            for data_type in ['dev', 'test']:
+                self.VALIDATION_METRICS.append('self-bleu_%s' % (data_type))
             self.stopping_criterion = None
             self.best_stopping_criterion = None
         else:

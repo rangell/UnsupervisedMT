@@ -13,8 +13,9 @@ import numpy as np
 import torch
 from torch import nn
 
-from .utils import restore_segmentation
+from .utils import restore_segmentation, sample_style
 
+from IPython import embed
 
 logger = getLogger()
 
@@ -67,19 +68,11 @@ class EvaluatorMT(object):
         """
         Create a new iterator for a dataset.
         """
-        assert data_type in ['valid', 'test']
-        dataset = self.data['split'][data_type]
-
-
-        if lang2 is None or lang1 == lang2:
-            for batch in self.mono_iterator(data_type, lang1):
-                yield batch if lang2 is None else (batch, batch)
-        else:
-            k = (lang1, lang2) if lang1 < lang2 else (lang2, lang1)
-            dataset = self.data['para'][k][data_type]
-            dataset.batch_size = 32
-            for batch in dataset.get_iterator(shuffle=False, group_by_size=True)():
-                yield batch if lang1 < lang2 else batch[::-1]
+        assert data_type in ['dev', 'test']
+        dataset = self.data['splits'][data_type]
+        dataset.batch_size = 32
+        for batch in dataset.get_iterator(shuffle=False, group_by_size=True)():
+            yield batch
 
     def create_reference_files(self):
         """
@@ -87,43 +80,36 @@ class EvaluatorMT(object):
         """
         params = self.params
         params.ref_paths = {}
+        params.attr_paths = {}
 
-        for (lang1, lang2), v in self.data['para'].items():
+        for data_type in ['dev', 'test']:
 
-            assert lang1 < lang2
-            lang1_id = params.lang2id[lang1]
-            lang2_id = params.lang2id[lang2]
+            ref_path = os.path.join(params.dump_path, 'ref.{0}.txt'.format(data_type))
+            attr_path = os.path.join(params.dump_path, 'ref.{0}.attr'.format(data_type))
 
-            for data_type in ['valid', 'test']:
+            ref_txt = []
+            ref_attr = []
 
-                lang1_path = os.path.join(params.dump_path, 'ref.{0}-{1}.{2}.txt'.format(lang2, lang1, data_type))
-                lang2_path = os.path.join(params.dump_path, 'ref.{0}-{1}.{2}.txt'.format(lang1, lang2, data_type))
+            # convert to text
+            for sent_, len_, attr_ in self.get_iterator(data_type):
+                ref_txt.extend(convert_to_text(sent_, len_, self.dico, params))
+                ref_attr.extend(convert_to_attr(attr_, params))
 
-                lang1_txt = []
-                lang2_txt = []
+            # replace <unk> by <<unk>> as these tokens cannot be counted in BLEU
+            ref_txt = [x.replace('<unk>', '<<unk>>') for x in ref_txt]
 
-                # convert to text
-                for (sent1, len1), (sent2, len2) in self.get_iterator(data_type, lang1, lang2):
-                    lang1_txt.extend(convert_to_text(sent1, len1, self.dico[lang1], lang1_id, params))
-                    lang2_txt.extend(convert_to_text(sent2, len2, self.dico[lang2], lang2_id, params))
+            # export hypothesis
+            with open(ref_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(ref_txt) + '\n')
+            with open(attr_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(ref_attr) + '\n')
 
-                # replace <unk> by <<unk>> as these tokens cannot be counted in BLEU
-                lang1_txt = [x.replace('<unk>', '<<unk>>') for x in lang1_txt]
-                lang2_txt = [x.replace('<unk>', '<<unk>>') for x in lang2_txt]
+            # restore original segmentation
+            restore_segmentation(ref_path)
 
-                # export hypothesis
-                with open(lang1_path, 'w', encoding='utf-8') as f:
-                    f.write('\n'.join(lang1_txt) + '\n')
-                with open(lang2_path, 'w', encoding='utf-8') as f:
-                    f.write('\n'.join(lang2_txt) + '\n')
-
-                # restore original segmentation
-                restore_segmentation(lang1_path)
-                restore_segmentation(lang2_path)
-
-                # store data paths
-                params.ref_paths[(lang2, lang1, data_type)] = lang1_path
-                params.ref_paths[(lang1, lang2, data_type)] = lang2_path
+            # store data paths
+            params.ref_paths[data_type] = ref_path
+            params.attr_paths[data_type] = attr_path
 
     def eval_para(self, lang1, lang2, data_type, scores):
         """
@@ -159,7 +145,7 @@ class EvaluatorMT(object):
 
             # cross-entropy loss
             xe_loss += loss_fn2(decoded.view(-1, n_words2), sent2[1:].view(-1)).item()
-            count += (len2 - 1).sum().item()  # skip BOS word
+            count += (len2 - 1).sum().item()  # skip bos word
 
             # convert to text
             txt.extend(convert_to_text(sent2_, len2_, self.dico[lang2], lang2_id, self.params))
@@ -167,20 +153,68 @@ class EvaluatorMT(object):
         # hypothesis / reference paths
         hyp_name = 'hyp{0}.{1}-{2}.{3}.txt'.format(scores['epoch'], lang1, lang2, data_type)
         hyp_path = os.path.join(params.dump_path, hyp_name)
-        ref_path = params.ref_paths[(lang1, lang2, data_type)]
+        ref_path = params.ref_paths[data_type]
 
-        # export sentences to hypothesis file / restore BPE segmentation
+        # export sentences to hypothesis file / restore bpe segmentation
         with open(hyp_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(txt) + '\n')
         restore_segmentation(hyp_path)
 
-        # evaluate BLEU score
+        # evaluate bleu score
         bleu = eval_moses_bleu(ref_path, hyp_path)
-        logger.info("BLEU %s %s : %f" % (hyp_path, ref_path, bleu))
+        logger.info("self-bleu %s %s : %f" % (hyp_path, ref_path, bleu))
 
         # update scores
-        scores['ppl_%s_%s_%s' % (lang1, lang2, data_type)] = np.exp(xe_loss / count)
-        scores['bleu_%s_%s_%s' % (lang1, lang2, data_type)] = bleu
+        scores['self-bleu_%s' % (data_type)] = bleu
+
+    def eval_content(self, data_type, scores):
+        """
+        Evaluate lang1 -> lang2 perplexity and BLEU scores.
+        """
+        logger.info("Evaluating %s ..." % (data_type))
+        assert data_type in ['dev', 'test']
+        self.encoder.eval()
+        self.decoder.eval()
+        params = self.params
+
+        # hypothesis
+        txt = []
+
+        # for perplexity
+        loss_fn2 = nn.CrossEntropyLoss(weight=self.decoder.loss_fn[0].weight, size_average=False)
+        n_words2 = self.params.n_words
+        count = 0
+
+        for batch in self.get_iterator(data_type):
+
+            # batch
+            sent1, len1, attr1 = batch
+            attr2 = sample_style(self.params, attr1)
+            sent1, attr1, attr2 = sent1.cuda(), attr1.cuda(), attr2.cuda()
+
+            # encode & generate
+            encoded = self.encoder(sent1, len1, attr1)
+            sent2_, len2_, _ = self.decoder.generate(encoded, attr2)
+
+            # convert to text
+            txt.extend(convert_to_text(sent2_, len2_, self.dico, self.params))
+
+        # hypothesis / reference paths
+        hyp_name = 'hyp{0}.{1}.txt'.format(scores['epoch'], data_type)
+        hyp_path = os.path.join(params.dump_path, hyp_name)
+        ref_path = params.ref_paths[data_type]
+
+        # export sentences to hypothesis file / restore bpe segmentation
+        with open(hyp_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(txt) + '\n')
+        restore_segmentation(hyp_path)
+
+        # evaluate bleu score
+        bleu = eval_moses_bleu(ref_path, hyp_path)
+        logger.info("self-bleu %s : %f - ref_path: %s - ref_path: %s " % (data_type, bleu, ref_path, hyp_path))
+
+        # update scores
+        scores['self-bleu_%s' % (data_type)] = bleu
 
     def eval_back(self, lang1, lang2, lang3, data_type, scores):
         """
@@ -258,14 +292,10 @@ class EvaluatorMT(object):
 
         with torch.no_grad():
 
-            for lang1, lang2 in self.data['para'].keys():
-                for data_type in ['valid', 'test']:
-                    self.eval_para(lang1, lang2, data_type, scores)
-                    self.eval_para(lang2, lang1, data_type, scores)
-
-            for lang1, lang2, lang3 in self.params.pivo_directions:
-                for data_type in ['valid', 'test']:
-                    self.eval_back(lang1, lang2, lang3, data_type, scores)
+            for data_type in ['dev', 'test']:
+                self.eval_content(data_type, scores)
+                #self.eval_transfer(data_type, scores)
+                #self.eval_fluency(data_type, scores)
 
         return scores
 
@@ -286,13 +316,13 @@ def eval_moses_bleu(ref, hyp):
         return -1
 
 
-def convert_to_text(batch, lengths, dico, lang_id, params):
+def convert_to_text(batch, lengths, dico, params):
     """
     Convert a batch of sentences to a list of text sentences.
     """
     batch = batch.cpu().numpy()
     lengths = lengths.cpu().numpy()
-    bos_index = params.bos_index[lang_id]
+    bos_index = params.bos_index
 
     slen, bs = batch.shape
     assert lengths.max() == slen and lengths.shape[0] == bs
@@ -308,3 +338,10 @@ def convert_to_text(batch, lengths, dico, lang_id, params):
             words.append(dico[batch[k, j]])
         sentences.append(" ".join(words))
     return sentences
+
+def convert_to_attr(attr, params):
+    """
+    Convert batch of attributes to a list of attribute names.
+    """
+    attr_list = [list(l) for l in attr]
+    return [", ".join([params.id2style[x.item()] for x in l]) for l in attr_list]

@@ -250,13 +250,12 @@ def main(params):
     trainer.reload_checkpoint()
     trainer.test_sharing()  # check parameters sharing
 
-    ## TODO: Come back and fix this!!!!
-    #evaluator = EvaluatorMT(trainer, data, params)
+    evaluator = EvaluatorMT(trainer, data, params)
 
-    ## evaluation mode
-    #if params.eval_only:
-    #    evaluator.run_all_evals(0)
-    #    exit()
+    # evaluation mode
+    if params.eval_only:
+        evaluator.run_all_evals(0)
+        exit()
 
     # language model pretraining
     if params.lm_before > 0:
@@ -324,9 +323,8 @@ def main(params):
 
         # end of epoch
         logger.info("====================== End of epoch %i ======================" % trainer.epoch)
-        exit()
 
-        # evaluate discriminator / perplexity / BLEU
+        # evaluate self-BLEU
         scores = evaluator.run_all_evals(trainer.epoch)
 
         # print / JSON log
