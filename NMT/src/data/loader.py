@@ -13,11 +13,13 @@ from ..utils import create_word_masks, create_st_word_masks
 from .dataset import MonolingualDataset, ParallelDataset, StyleDataset
 from .dictionary import EOS_WORD, PAD_WORD, UNK_WORD, SPECIAL_WORD, SPECIAL_WORDS
 
+from collections import OrderedDict
 from IPython import embed
 import json
 import pandas as pd
 from functools import reduce
 from operator import mul
+
 
 logger = getLogger()
 
@@ -429,6 +431,13 @@ def check_all_data_params(params):
     Check datasets parameters.
     """
 
+    # make sure data directory exists
+    assert os.path.isdir(params.data_dir)
+
+    params.train_prefix = "/".join([params.data_dir, params.train_prefix])
+    params.dev_prefix = "/".join([params.data_dir, params.dev_prefix])
+    params.test_prefix = "/".join([params.data_dir, params.test_prefix])
+
     # make sure dataset files exist
     for suffix in [params.text_suffix, params.attribute_suffix]:
         for prefix in [params.train_prefix, params.dev_prefix, params.test_prefix]:
@@ -446,9 +455,12 @@ def check_all_data_params(params):
 
     # check styles
     assert os.path.isfile(params.metadata_filename)
-    params.style_metadata = json.load(open(params.metadata_filename, 'r'))
+    params.style_metadata = json.load(open(params.metadata_filename, 'r'),
+                                      object_pairs_hook=OrderedDict)
     params.styles = []
-    for _, attr_list in params.style_metadata['attributes'].items():
+    params.attr_names = []
+    for attr_name, attr_list in params.style_metadata['attributes'].items():
+        params.attr_names.append(attr_name)
         params.styles += attr_list
     params.n_styles = len(params.styles)
     params.id2style = {k : v for k, v in enumerate(params.styles)}
@@ -468,6 +480,17 @@ def check_all_data_params(params):
     params.modulo_constants = torch.LongTensor(params.modulo_constants)
     params.start_indices = torch.LongTensor(params.start_indices)
     params.integer_divisors = torch.LongTensor(params.integer_divisors)
+
+    # extend classifier paths
+    params.clf_paths = {}
+    if 'classifiers' in params.style_metadata.keys():
+        for attr_name, clf_name in params.style_metadata['classifiers'].items():
+            clf_path = "/".join([params.data_dir, clf_name])
+            assert os.path.isfile(clf_path)
+            params.clf_paths[attr_name] = clf_path
+    else:
+        logger.warning('No classifiers available from metadata file')
+        exit()
 
     # definitely want to share embeddings between enc & dec
     assert params.share_encdec_emb == True

@@ -102,6 +102,9 @@ class TrainerMT(MultiprocessingEventLoop):
         if params.stopping_criterion == '':
             for data_type in ['dev', 'test']:
                 self.VALIDATION_METRICS.append('self-bleu_%s' % (data_type))
+                for attr_name in params.attr_names:
+                    self.VALIDATION_METRICS.append('tsf_accuracy_%s_%s'
+                            % (attr_name, data_type))
             self.stopping_criterion = None
             self.best_stopping_criterion = None
         else:

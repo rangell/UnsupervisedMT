@@ -14,6 +14,8 @@ import torch
 from torch import nn
 
 from .utils import restore_segmentation, sample_style
+import fastText
+import random
 
 from IPython import embed
 
@@ -40,6 +42,9 @@ class EvaluatorMT(object):
 
         # create reference files for BLEU evaluation
         self.create_reference_files()
+
+        # load classfication models for computing style transfer accuracy
+        self.load_classification_models()
 
     def get_pair_for_mono(self, lang):
         """
@@ -111,6 +116,13 @@ class EvaluatorMT(object):
             params.ref_paths[data_type] = ref_path
             params.attr_paths[data_type] = attr_path
 
+    def load_classification_models(self):
+        params = self.params
+        self.style_clfs = {}
+        for attr_name in params.attr_names:
+            clf_path = params.clf_paths[attr_name]
+            self.style_clfs[attr_name] = fastText.load_model(clf_path)
+
     def eval_para(self, lang1, lang2, data_type, scores):
         """
         Evaluate lang1 -> lang2 perplexity and BLEU scores.
@@ -169,7 +181,7 @@ class EvaluatorMT(object):
 
     def eval_content(self, data_type, scores):
         """
-        Evaluate lang1 -> lang2 perplexity and BLEU scores.
+        Evaluate self-BLEU scores.
         """
         logger.info("Evaluating %s ..." % (data_type))
         assert data_type in ['dev', 'test']
@@ -178,10 +190,13 @@ class EvaluatorMT(object):
         params = self.params
 
         # hypothesis
-        txt = []
+        txt_list1 = [] # Coming from txt
+        txt_list2 = [] # Going to txt
+        attr_list1 = [] # Coming from attr
+        attr_list2 = [] # Going to attr
 
         # for perplexity
-        loss_fn2 = nn.CrossEntropyLoss(weight=self.decoder.loss_fn[0].weight, size_average=False)
+        loss_fn2 = nn.CrossEntropyLoss(weight=self.decoder.loss_fn[0].weight, reduction='sum')
         n_words2 = self.params.n_words
         count = 0
 
@@ -189,16 +204,59 @@ class EvaluatorMT(object):
 
             # batch
             sent1, len1, attr1 = batch
-            attr2 = sample_style(self.params, attr1)
-            sent1, attr1, attr2 = sent1.cuda(), attr1.cuda(), attr2.cuda()
+            attr2_ = sample_style(self.params, attr1)
+            sent1, attr1, attr2_ = sent1.cuda(), attr1.cuda(), attr2_.cuda()
 
             # encode & generate
             encoded = self.encoder(sent1, len1, attr1)
-            sent2_, len2_, _ = self.decoder.generate(encoded, attr2)
+            sent2_, len2_, _ = self.decoder.generate(encoded, attr2_)
 
             # convert to text
-            txt.extend(convert_to_text(sent2_, len2_, self.dico, self.params))
+            txt_list1.extend(convert_to_text(sent1, len1, self.dico, self.params))
+            txt_list2.extend(convert_to_text(sent2_, len2_, self.dico, self.params))
 
+            # convert attr id labels to text versions
+            attr_list1.extend([list(x) for x in attr1.cpu().numpy()])
+            attr_list2.extend([list(x) for x in attr2_.cpu().numpy()])
+
+        # obtain predictions
+        pred_attr = []
+        for txt_sent in txt_list2:
+            preds = []
+            for attr_name in params.attr_names:
+                pred_label = self.style_clfs[attr_name].predict(txt_sent)[0][0]
+                pred_id = params.style2id[pred_label.replace('__label__', '')]
+                preds.append(pred_id)
+            pred_attr.append(preds)
+
+        # Print out some examples here
+        num_samples = 10
+        sample_indices = random.sample(range(len(txt_list1)), num_samples)
+        logger.info("Sampling random examples...\n")
+        for i in sample_indices:
+            logger.info("Example {}:".format(i) + "\noriginal attributes: " 
+                        + " ".join([params.id2style[x] for x in attr_list1[i]])
+                        + "\noriginal text: " + txt_list1[i]
+                        + "\n\nintended attributes: "
+                        + " ".join([params.id2style[x] for x in attr_list2[i]])
+                        + "\npredicted attributes: "
+                        + " ".join([params.id2style[x] for x in pred_attr[i]])
+                        + "\ntransferred text: " + txt_list2[i] + "\n")
+
+        orig_attr = np.asarray(attr_list1)
+        tgt_attr = np.asarray(attr_list2)
+        pred_attr = np.asarray(pred_attr)
+
+        tsf_acc = list(np.mean(tgt_attr == pred_attr, axis=0))
+        pred_orig_style = np.mean(np.all(orig_attr == pred_attr, axis=1))
+
+        for attr_name, acc in zip(params.attr_names, tsf_acc):
+            key = 'tsf_accuracy_%s_%s' % (attr_name, data_type)
+            logger.info('%s: %f' % (key, acc))
+            scores[key] = acc
+        logger.info('pred_orig_style_%s: %f' % (data_type, pred_orig_style))
+        scores['pred_orig_style_%s' % data_type] = pred_orig_style
+                
         # hypothesis / reference paths
         hyp_name = 'hyp{0}.{1}.txt'.format(scores['epoch'], data_type)
         hyp_path = os.path.join(params.dump_path, hyp_name)
@@ -206,7 +264,7 @@ class EvaluatorMT(object):
 
         # export sentences to hypothesis file / restore bpe segmentation
         with open(hyp_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(txt) + '\n')
+            f.write('\n'.join(txt_list2) + '\n')
         restore_segmentation(hyp_path)
 
         # evaluate bleu score

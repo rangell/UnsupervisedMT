@@ -116,6 +116,8 @@ def get_parser():
                         help="Feed the discriminator with the projected output (attention only)")
 
     # dataset
+    parser.add_argument("--data_dir", type=str, default="",
+                        help="Directory containing all dataset and classifier files")
     parser.add_argument("--text_suffix", type=str, default="",
                         help="Text file suffix")
     parser.add_argument("--attribute_suffix", type=str, default="",
@@ -251,6 +253,11 @@ def main(params):
     trainer.test_sharing()  # check parameters sharing
 
     evaluator = EvaluatorMT(trainer, data, params)
+
+    # For testing
+    logger.warning("For testing: running all evaluations")
+    evaluator.run_all_evals(0)
+    exit()
 
     # evaluation mode
     if params.eval_only:
