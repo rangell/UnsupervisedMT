@@ -22,7 +22,7 @@ from IPython import embed
 
 def get_parser():
     # parse parameters
-    parser = argparse.ArgumentParser(description='Language transfer')
+    parser = argparse.ArgumentParser(description='Text style transfer')
     parser.add_argument("--exp_name", type=str, default="",
                         help="Experiment name")
     parser.add_argument("--exp_id", type=str, default="",
@@ -128,6 +128,8 @@ def get_parser():
                         help="Dev prefix, expected with test and attribute suffixes.")
     parser.add_argument("--test_prefix", type=str, default="",
                         help="Test prefix, expected with test and attribute suffixes.")
+    parser.add_argument("--test_para_prefix", type=str, default="",
+                        help="Test parallel ground truth prefix, expected with test and attribute suffixes.")
     parser.add_argument("--vocab_filename", type=str, default="",
                         help="Vocabulary filename")
     parser.add_argument("--vocab_min_count", type=int, default=0,
@@ -142,7 +144,9 @@ def get_parser():
     # training steps
     parser.add_argument("--n_dis", type=int, default=0,
                         help="Number of discriminator training iterations")
-    parser.add_argument("--otf_sample", type=float, default=-1,
+    parser.add_argument("--fe_smooth_temp", type=str, default="1",
+                        help="Temperature for soft argmax")
+    parser.add_argument("--otf_sample", type=str, default="0",
                         help="Temperature for sampling back-translations (-1 for greedy decoding)")
     parser.add_argument("--otf_backprop_temperature", type=float, default=-1,
                         help="Back-propagate through the encoder (-1 to disable, temperature otherwise)")
@@ -253,9 +257,6 @@ def main(params):
     trainer.test_sharing()  # check parameters sharing
 
     evaluator = EvaluatorMT(trainer, data, params)
-
-    # For testing
-    logger.warning("For testing: running all evaluations")
     evaluator.run_all_evals(0)
     exit()
 

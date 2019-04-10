@@ -200,6 +200,10 @@ class EvaluatorMT(object):
         n_words2 = self.params.n_words
         count = 0
 
+        print("Inside eval content...")
+        embed()
+        exit()
+
         for batch in self.get_iterator(data_type):
 
             # batch
@@ -352,8 +356,7 @@ class EvaluatorMT(object):
 
             for data_type in ['dev', 'test']:
                 self.eval_content(data_type, scores)
-                #self.eval_transfer(data_type, scores)
-                #self.eval_fluency(data_type, scores)
+                # if 'test ground truth'/'test para'
 
         return scores
 

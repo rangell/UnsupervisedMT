@@ -293,6 +293,10 @@ def update_lambdas(params, n_total_iter):
     """
     Update all lambda coefficients.
     """
+    if params.fe_smooth_temp_config is not None:
+        params.fe_smooth_temp = update_lambda_value(params.fe_smooth_temp_config, n_total_iter)
+    if params.otf_sample_config is not None:
+        params.otf_sample = update_lambda_value(params.otf_sample_config, n_total_iter)
     if params.lambda_xe_ae_config is not None:
         params.lambda_xe_ae = update_lambda_value(params.lambda_xe_ae_config, n_total_iter)
     if params.lambda_ipot_ae_config is not None:

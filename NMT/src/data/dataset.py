@@ -10,6 +10,7 @@ import math
 import numpy as np
 import torch
 
+from IPython import embed
 
 logger = getLogger()
 
@@ -273,6 +274,7 @@ class StyleDataset(object):
         self.unk_index = params.unk_index
         self.bos_index = params.bos_index
         self.batch_size = params.batch_size
+        self.n_styles = params.n_styles
 
         self.sent = sent
         self.pos = pos
@@ -366,6 +368,24 @@ class StyleDataset(object):
                 yield self.batch_sentences(sent, attr)
         return iterator
 
+    def balance_dataset(self, indices):
+        assert self.attr.shape[1] == 1 # Only one attribute we're controlling
+
+        styles = np.unique(self.attr)
+        style_counts = [np.sum(self.attr == s) for s in styles]
+        max_style_count = max(style_counts)
+        num_to_sample = [max_style_count - x for x in style_counts]
+
+        for s, to_sample in zip(styles, num_to_sample):
+            if to_sample == 0:
+                continue
+            s_indices = indices[np.squeeze(self.attr[indices] == s)]
+            ind_of_ind = np.random.choice(s_indices.size, to_sample,
+                                          replace=False)
+            indices = np.append(indices, s_indices[ind_of_ind])
+
+        return indices
+
     def get_iterator(self, shuffle, group_by_size=False, n_sentences=-1):
         """
         Return a sentences iterator.
@@ -375,14 +395,29 @@ class StyleDataset(object):
         assert type(shuffle) is bool and type(group_by_size) is bool
 
         # select sentences to iterate over
+        indices = np.arange(n_sentences)
         if shuffle:
-            indices = np.random.permutation(len(self.pos))[:n_sentences]
+            np.random.shuffle(indices)
+
+        if self.attr.shape[1] == 1:
+            indices = self.balance_dataset(indices)
         else:
-            indices = np.arange(n_sentences)
+            raise NotImplementedError("Iterator not implemented for multiple attributes")
 
         # group sentences by lengths
         if group_by_size:
             indices = indices[np.argsort(self.lengths[indices], kind='mergesort')]
+
+        if self.attr.shape[1] == 1:
+            styles = np.unique(self.attr)
+            n_styles = styles.size
+            group_indices = np.zeros(indices.shape, dtype='int64')
+            for i, s, in zip(range(n_styles), styles):
+                s_indices = np.squeeze(self.attr[indices] == s)
+                group_indices[i::n_styles] = indices[s_indices]
+            indices = group_indices
+        else:
+            raise NotImplementedError("Iterator not implemented for multiple attributes")
 
         # create batches / optionally shuffle them
         batches = np.array_split(indices, math.ceil(len(indices) * 1. / self.batch_size))

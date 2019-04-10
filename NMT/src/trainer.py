@@ -52,16 +52,18 @@ class TrainerMT(MultiprocessingEventLoop):
         # define encoder parameters (the ones shared with the
         # decoder are optimized by the decoder optimizer)
         enc_params = list(encoder.parameters())
-        feat_extr_params = list(feat_extr.parameters())
         assert enc_params[0].size() == (params.n_words, params.emb_dim)
         assert enc_params[1].size() == (params.n_styles+1, params.emb_dim)
-        assert feat_extr_params[0].size() == (params.n_words, params.emb_dim)
-        assert feat_extr_params[1].size() == (params.n_styles+1, params.emb_dim)
+        if feat_extr is not None:
+            feat_extr_params = list(feat_extr.parameters())
+            assert feat_extr_params[0].size() == (params.n_words, params.emb_dim)
+            assert feat_extr_params[1].size() == (params.n_styles+1, params.emb_dim)
 
         if self.params.share_encdec_emb:
             to_ignore = 2   # ignore word embeddings and style embeddings
             enc_params = enc_params[to_ignore:]
-            feat_extr_params = feat_extr_params[to_ignore:]
+            if feat_extr is not None:
+                feat_extr_params = feat_extr_params[to_ignore:]
 
         # optimizers
         if params.dec_optimizer == 'enc_optimizer':
@@ -153,6 +155,8 @@ class TrainerMT(MultiprocessingEventLoop):
         self.init_bpe()
 
         # initialize lambda coefficients and their configurations
+        parse_lambda_config(params, 'fe_smooth_temp')
+        parse_lambda_config(params, 'otf_sample')
         parse_lambda_config(params, 'lambda_xe_ae')
         parse_lambda_config(params, 'lambda_ipot_ae')
         parse_lambda_config(params, 'lambda_xe_otf_bt')
@@ -194,7 +198,7 @@ class TrainerMT(MultiprocessingEventLoop):
             batch = next(iterator)
         return batch
 
-    def word_shuffle(self, x, l, lang_id):
+    def word_shuffle(self, x, l):
         """
         Randomly shuffle input words.
         """
@@ -206,7 +210,7 @@ class TrainerMT(MultiprocessingEventLoop):
         noise[0] = -1  # do not move start sentence symbol
 
         # be sure to shuffle entire words
-        bpe_end = self.bpe_end[lang_id][x]
+        bpe_end = self.bpe_end[0][x]
         word_idx = bpe_end[::-1].cumsum(0)[::-1]
         word_idx = word_idx.max(0)[None, :] - word_idx
 
@@ -221,7 +225,7 @@ class TrainerMT(MultiprocessingEventLoop):
             x2[:l[i] - 1, i].copy_(x2[:l[i] - 1, i][torch.from_numpy(permutation)])
         return x2, l
 
-    def word_dropout(self, x, l, lang_id):
+    def word_dropout(self, x, l):
         """
         Randomly drop input words.
         """
@@ -230,13 +234,13 @@ class TrainerMT(MultiprocessingEventLoop):
         assert 0 < self.params.word_dropout < 1
 
         # define words to drop
-        bos_index = self.params.bos_index[lang_id]
+        bos_index = self.params.bos_index
         assert (x[0] == bos_index).sum() == l.size(0)
         keep = np.random.rand(x.size(0) - 1, x.size(1)) >= self.params.word_dropout
         keep[0] = 1  # do not drop the start sentence symbol
 
         # be sure to drop entire words
-        bpe_end = self.bpe_end[lang_id][x]
+        bpe_end = self.bpe_end[0][x]
         word_idx = bpe_end[::-1].cumsum(0)[::-1]
         word_idx = word_idx.max(0)[None, :] - word_idx
 
@@ -261,7 +265,7 @@ class TrainerMT(MultiprocessingEventLoop):
             x2[:l2[i], i].copy_(torch.LongTensor(sentences[i]))
         return x2, l2
 
-    def word_blank(self, x, l, lang_id):
+    def word_blank(self, x, l):
         """
         Randomly blank input words.
         """
@@ -270,13 +274,13 @@ class TrainerMT(MultiprocessingEventLoop):
         assert 0 < self.params.word_blank < 1
 
         # define words to blank
-        bos_index = self.params.bos_index[lang_id]
+        bos_index = self.params.bos_index
         assert (x[0] == bos_index).sum() == l.size(0)
         keep = np.random.rand(x.size(0) - 1, x.size(1)) >= self.params.word_blank
         keep[0] = 1  # do not blank the start sentence symbol
 
         # be sure to blank entire words
-        bpe_end = self.bpe_end[lang_id][x]
+        bpe_end = self.bpe_end[0][x]
         word_idx = bpe_end[::-1].cumsum(0)[::-1]
         word_idx = word_idx.max(0)[None, :] - word_idx
 
@@ -295,13 +299,13 @@ class TrainerMT(MultiprocessingEventLoop):
             x2[:l[i], i].copy_(torch.LongTensor(sentences[i]))
         return x2, l
 
-    def add_noise(self, words, lengths, lang_id):
+    def add_noise(self, words, lengths):
         """
         Add noise to the encoder input.
         """
-        words, lengths = self.word_shuffle(words, lengths, lang_id)
-        words, lengths = self.word_dropout(words, lengths, lang_id)
-        words, lengths = self.word_blank(words, lengths, lang_id)
+        words, lengths = self.word_shuffle(words, lengths)
+        words, lengths = self.word_dropout(words, lengths)
+        words, lengths = self.word_blank(words, lengths)
         return words, lengths
 
     def zero_grad(self, models):
@@ -455,12 +459,10 @@ class TrainerMT(MultiprocessingEventLoop):
             attr2 = sample_style(params, attr1)
             attr2 = attr2.cuda()
 
-            if params.otf_sample == -1:
-                sent2, len2, _ = self.decoder.generate(encoded, attr2, max_len=max_len)
-            else:
-                sent2, len2, _ = self.decoder.generate(encoded, attr2, max_len=max_len,
-                                                       sample=True, temperature=params.otf_sample)
-
+            # greedy decode
+            sent2, len2, _ = self.decoder.generate(encoded,
+                                                   attr2,
+                                                   max_len=max_len)
         return dict([
                  ('sent1', sent1), ('len1', len1), ('attr1', attr1),
                  ('sent2', sent2), ('len2', len2), ('attr2', attr2),
@@ -478,6 +480,11 @@ class TrainerMT(MultiprocessingEventLoop):
 
         # get batch
         sent_, len_, attr_ = self.get_batch('encdec_ae')
+
+        # noise input sequence
+        sent_, len_ = self.add_noise(sent_, len_)
+
+        # put sents and attr on gpu
         sent_ = sent_.cuda()
         attr_ = attr_.cuda()
 
@@ -570,13 +577,36 @@ class TrainerMT(MultiprocessingEventLoop):
         assert lambda_feat_extr > 0
 
         if batch['len2'].min() < 3:
-            logger.warning("Missed feat_extr step")
+            logger.warning("Missed adv step")
             return
 
-        real_reps = self.feat_extr(batch['sent1'].cuda(), batch['len1'],
-                                   batch['attr1'].cuda())
-        fake_reps = self.feat_extr(batch['sent2'].cuda(), batch['len2'],
-                                   batch['attr2'].cuda())
+        params = self.params
+        self.encoder.eval()
+        self.decoder.eval()
+        self.feat_extr.train()
+
+        sent1 = batch['sent1'].cuda()
+        len1 = batch['len1']
+        attr1 = batch['attr1'].cuda()
+
+        sent2 = batch['sent2'].cuda()
+        len2 = batch['len2']
+        attr2 = batch['attr2'].cuda()
+
+        # encode previously generated sentence
+        encoded = self.encoder(sent1, len1, attr1)
+
+        # cross-entropy scores / loss
+        scores = self.decoder(encoded, sent2[:-1], attr2)
+        smooth_scores = self.decoder.smooth(scores / params.fe_smooth_temp)
+        soft_sent2 = torch.matmul(smooth_scores, self.decoder.embeddings.weight)
+        soft_sent2 = torch.cat([torch.zeros(1, soft_sent2.size(1),
+                                            soft_sent2.size(2)).cuda(),
+                                soft_sent2])
+
+        real_reps = self.feat_extr(sent1, len1, attr1)
+        fake_reps = self.feat_extr(soft_sent2, len2, attr2, soft=True)
+
         # TODO: concat negative examples (i.e. (sent2, len2, attr1), (sent1, len1, attr2), etc.)
 
         loss = -IPOT(real_reps, fake_reps)
@@ -612,7 +642,7 @@ class TrainerMT(MultiprocessingEventLoop):
 
         # cross-entropy scores / loss
         scores = self.decoder(encoded, sent2[:-1], attr2)
-        smooth_scores = self.decoder.smooth(scores)
+        smooth_scores = self.decoder.smooth(scores / params.fe_smooth_temp)
         soft_sent2 = torch.matmul(smooth_scores, self.decoder.embeddings.weight)
         soft_sent2 = torch.cat([torch.zeros(1, soft_sent2.size(1),
                                             soft_sent2.size(2)).cuda(),

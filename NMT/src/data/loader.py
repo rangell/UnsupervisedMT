@@ -393,8 +393,12 @@ def load_st_data(params):
     data = {'dico': None, 'vocab': None, 'splits': {}}
 
     _prefixes = [params.train_prefix, params.dev_prefix, params.test_prefix]
+    _names = ['train', 'dev', 'test']
+    if params.test_para_prefix != '':
+        _prefixes.append(params.test_para_prefix)
+        _names.append('test_para')
 
-    for name, prefix in zip(['train', 'dev', 'test'], _prefixes):
+    for name, prefix in zip(_names, _prefixes):
         text_path = ".".join([prefix, params.text_suffix])
         text_data = load_binarized(text_path, params)
 
@@ -412,7 +416,7 @@ def load_st_data(params):
                                text_data['dico'], attribute_data, params)
 
         # remove too long sentences (train / valid only, test must remain unchanged)
-        if name != 'test':
+        if name != 'test' and name != 'test_para':
             dataset.remove_long_sentences(params.max_len)
 
         data['splits'][name] = dataset
@@ -438,9 +442,20 @@ def check_all_data_params(params):
     params.dev_prefix = "/".join([params.data_dir, params.dev_prefix])
     params.test_prefix = "/".join([params.data_dir, params.test_prefix])
 
+    prefixes = [params.train_prefix, params.dev_prefix, params.test_prefix]
+
+    if params.test_para_prefix != "":
+        params.test_para_prefix = "/".join([params.data_dir,
+                                            params.test_para_prefix])
+        prefixes.append(params.test_para_prefix)
+
+    #print("Inside check_all_data_params")
+    #embed()
+    #exit()
+
     # make sure dataset files exist
     for suffix in [params.text_suffix, params.attribute_suffix]:
-        for prefix in [params.train_prefix, params.dev_prefix, params.test_prefix]:
+        for prefix in prefixes:
             assert os.path.isfile(".".join([prefix, suffix]))
 
     # make sure vocab file exists
