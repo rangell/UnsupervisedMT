@@ -454,7 +454,8 @@ class TrainerMT(MultiprocessingEventLoop):
             sent1, len1, attr1 = self.get_batch('gen_st')
 
             encoded = self.encoder(sent1.cuda(), len1, attr1.cuda())
-            max_len = int(1.5 * len1.max() + 10)
+            #max_len = int(1.5 * len1.max() + 10)
+            max_len = int(len1.max() + 10)
 
             attr2 = sample_style(params, attr1)
             attr2 = attr2.cuda()

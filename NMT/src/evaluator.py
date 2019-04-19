@@ -89,6 +89,9 @@ class EvaluatorMT(object):
 
         for data_type in ['dev', 'test']:
 
+            if data_type == 'test' and params.test_para:
+                data_type == 'test_para'
+
             ref_path = os.path.join(params.dump_path, 'ref.{0}.txt'.format(data_type))
             attr_path = os.path.join(params.dump_path, 'ref.{0}.attr'.format(data_type))
 
@@ -174,7 +177,7 @@ class EvaluatorMT(object):
 
         # evaluate bleu score
         bleu = eval_moses_bleu(ref_path, hyp_path)
-        logger.info("self-bleu %s %s : %f" % (hyp_path, ref_path, bleu))
+        assert False
 
         # update scores
         scores['self-bleu_%s' % (data_type)] = bleu
@@ -200,10 +203,6 @@ class EvaluatorMT(object):
         n_words2 = self.params.n_words
         count = 0
 
-        print("Inside eval content...")
-        embed()
-        exit()
-
         for batch in self.get_iterator(data_type):
 
             # batch
@@ -213,7 +212,8 @@ class EvaluatorMT(object):
 
             # encode & generate
             encoded = self.encoder(sent1, len1, attr1)
-            sent2_, len2_, _ = self.decoder.generate(encoded, attr2_)
+            max_len = int(len1.max() + 10)
+            sent2_, len2_, _ = self.decoder.generate(encoded, attr2_, max_len=max_len)
 
             # convert to text
             txt_list1.extend(convert_to_text(sent1, len1, self.dico, self.params))
@@ -273,10 +273,16 @@ class EvaluatorMT(object):
 
         # evaluate bleu score
         bleu = eval_moses_bleu(ref_path, hyp_path)
-        logger.info("self-bleu %s : %f - ref_path: %s - ref_path: %s " % (data_type, bleu, ref_path, hyp_path))
 
-        # update scores
-        scores['self-bleu_%s' % (data_type)] = bleu
+        if data_type == 'test' and params.test_para:
+            logger.info("bleu %s : %f - ref_path: %s - ref_path: %s " % (data_type, bleu, ref_path, hyp_path))
+            # update scores
+            scores['bleu_%s' % (data_type)] = bleu
+        else:
+            logger.info("self-bleu %s : %f - ref_path: %s - ref_path: %s " % (data_type, bleu, ref_path, hyp_path))
+            # update scores
+            scores['self-bleu_%s' % (data_type)] = bleu
+
 
     def eval_back(self, lang1, lang2, lang3, data_type, scores):
         """

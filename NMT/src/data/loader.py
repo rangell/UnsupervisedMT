@@ -10,7 +10,7 @@ from logging import getLogger
 import torch
 
 from ..utils import create_word_masks, create_st_word_masks
-from .dataset import MonolingualDataset, ParallelDataset, StyleDataset
+from .dataset import MonolingualDataset, ParallelDataset, UnpairedStyleDataset, PairedStyleDataset
 from .dictionary import EOS_WORD, PAD_WORD, UNK_WORD, SPECIAL_WORD, SPECIAL_WORDS
 
 from collections import OrderedDict
@@ -412,7 +412,7 @@ def load_st_data(params):
         attribute_path = ".".join([prefix, params.attribute_suffix])
         attribute_data = load_attributes(attribute_path, params)
 
-        dataset = StyleDataset(text_data['sentences'], text_data['positions'],
+        dataset = UnpairedStyleDataset(text_data['sentences'], text_data['positions'],
                                text_data['dico'], attribute_data, params)
 
         # remove too long sentences (train / valid only, test must remain unchanged)
@@ -444,7 +444,9 @@ def check_all_data_params(params):
 
     prefixes = [params.train_prefix, params.dev_prefix, params.test_prefix]
 
+    params.test_para = False
     if params.test_para_prefix != "":
+        params.test_para = True
         params.test_para_prefix = "/".join([params.data_dir,
                                             params.test_para_prefix])
         prefixes.append(params.test_para_prefix)
