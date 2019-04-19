@@ -45,9 +45,9 @@ class TrainerMT(MultiprocessingEventLoop):
         self.params = params
 
         # initialization for on-the-fly generation/training
-        self.otf_start_multiprocessing()
-        self.subprocess_ids = list(range(self.num_replicas))
-        self.ranks = {}
+        #self.otf_start_multiprocessing()
+        #self.subprocess_ids = list(range(self.num_replicas))
+        #self.ranks = {}
 
         # define encoder parameters (the ones shared with the
         # decoder are optimized by the decoder optimizer)

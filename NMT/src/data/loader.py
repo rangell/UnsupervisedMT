@@ -19,6 +19,7 @@ import json
 import pandas as pd
 from functools import reduce
 from operator import mul
+import pickle
 
 
 logger = getLogger()
@@ -469,6 +470,10 @@ def check_all_data_params(params):
     assert params.word_shuffle == 0 or params.word_shuffle > 1
     assert 0 <= params.word_dropout < 1
     assert 0 <= params.word_blank < 1
+
+    # check idf vectors for semantic similarity
+    assert os.path.isfile(params.idf_vecs_filename)
+    params.token_idf_vecs = pickle.load(open(params.idf_vecs_filename, 'rb'))
 
     # check styles
     assert os.path.isfile(params.metadata_filename)

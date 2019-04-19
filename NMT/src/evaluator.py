@@ -66,17 +66,17 @@ class EvaluatorMT(object):
         else:
             i = None
         dataset.batch_size = 32
-        for batch in dataset.get_iterator(shuffle=False, group_by_size=True)():
+        for batch in dataset.get_iterator(shuffle=False, group_by_size=False)():
             yield batch if i is None else batch[i]
 
     def get_iterator(self, data_type):
         """
         Create a new iterator for a dataset.
         """
-        assert data_type in ['dev', 'test']
+        assert data_type in ['dev', 'test', 'test_para']
         dataset = self.data['splits'][data_type]
         dataset.batch_size = 32
-        for batch in dataset.get_iterator(shuffle=False, group_by_size=True)():
+        for batch in dataset.get_iterator(shuffle=False, group_by_size=False)():
             yield batch
 
     def create_reference_files(self):
@@ -90,7 +90,7 @@ class EvaluatorMT(object):
         for data_type in ['dev', 'test']:
 
             if data_type == 'test' and params.test_para:
-                data_type == 'test_para'
+                data_type = 'test_para'
 
             ref_path = os.path.join(params.dump_path, 'ref.{0}.txt'.format(data_type))
             attr_path = os.path.join(params.dump_path, 'ref.{0}.attr'.format(data_type))
@@ -260,6 +260,9 @@ class EvaluatorMT(object):
             scores[key] = acc
         logger.info('pred_orig_style_%s: %f' % (data_type, pred_orig_style))
         scores['pred_orig_style_%s' % data_type] = pred_orig_style
+    
+        if data_type == 'test' and params.test_para:
+            data_type = 'test_para'
                 
         # hypothesis / reference paths
         hyp_name = 'hyp{0}.{1}.txt'.format(scores['epoch'], data_type)
@@ -274,7 +277,7 @@ class EvaluatorMT(object):
         # evaluate bleu score
         bleu = eval_moses_bleu(ref_path, hyp_path)
 
-        if data_type == 'test' and params.test_para:
+        if data_type == 'test_para':
             logger.info("bleu %s : %f - ref_path: %s - ref_path: %s " % (data_type, bleu, ref_path, hyp_path))
             # update scores
             scores['bleu_%s' % (data_type)] = bleu
@@ -381,6 +384,10 @@ def eval_moses_bleu(ref, hyp):
     else:
         logger.warning('Impossible to parse BLEU score! "%s"' % result)
         return -1
+
+
+def compute_sim():
+    pass
 
 
 def convert_to_text(batch, lengths, dico, params):

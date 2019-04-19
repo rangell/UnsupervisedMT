@@ -140,6 +140,8 @@ def get_parser():
                         help="Maximum vocabulary size (-1 to disable)")
     parser.add_argument("--metadata_filename", type=str, default="",
                         help="Metadata filename")
+    parser.add_argument("--idf_vecs_filename", type=str, default="",
+                        help="For evaluating semantic similarity")
 
     # training steps
     parser.add_argument("--n_dis", type=int, default=0,

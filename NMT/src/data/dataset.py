@@ -406,7 +406,8 @@ class UnpairedStyleDataset(StyleDataset):
             np.random.shuffle(indices)
 
         if self.attr.shape[1] == 1:
-            indices = self.balance_dataset(indices)
+            if group_by_size:
+                indices = self.balance_dataset(indices)
         else:
             raise NotImplementedError("Iterator not implemented for multiple attributes")
 
@@ -415,13 +416,14 @@ class UnpairedStyleDataset(StyleDataset):
             indices = indices[np.argsort(self.lengths[indices], kind='mergesort')]
 
         if self.attr.shape[1] == 1:
-            styles = np.unique(self.attr)
-            n_styles = styles.size
-            group_indices = np.zeros(indices.shape, dtype='int64')
-            for i, s, in zip(range(n_styles), styles):
-                s_indices = np.squeeze(self.attr[indices] == s)
-                group_indices[i::n_styles] = indices[s_indices]
-            indices = group_indices
+            if group_by_size:
+                styles = np.unique(self.attr)
+                n_styles = styles.size
+                group_indices = np.zeros(indices.shape, dtype='int64')
+                for i, s, in zip(range(n_styles), styles):
+                    s_indices = np.squeeze(self.attr[indices] == s)
+                    group_indices[i::n_styles] = indices[s_indices]
+                indices = group_indices
         else:
             raise NotImplementedError("Iterator not implemented for multiple attributes")
 
