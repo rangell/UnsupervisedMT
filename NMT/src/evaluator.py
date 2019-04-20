@@ -17,6 +17,8 @@ from .utils import restore_segmentation, sample_style
 import fastText
 import random
 
+from scipy.spatial.distance import cosine
+
 from IPython import embed
 
 logger = getLogger()
@@ -260,7 +262,12 @@ class EvaluatorMT(object):
             scores[key] = acc
         logger.info('pred_orig_style_%s: %f' % (data_type, pred_orig_style))
         scores['pred_orig_style_%s' % data_type] = pred_orig_style
-    
+
+        # semantic similarity
+        sim = self.compute_sim(txt_list1, txt_list2)
+        logger.info("sim %s : %f " % (data_type, sim))
+        scores['sim_%s' % (data_type)] = sim
+
         if data_type == 'test' and params.test_para:
             data_type = 'test_para'
                 
@@ -286,6 +293,27 @@ class EvaluatorMT(object):
             # update scores
             scores['self-bleu_%s' % (data_type)] = bleu
 
+    def compute_sim(self, original, transferred):
+        token_idf_vecs = self.params.token_idf_vecs
+
+        def get_vec(token):
+            try:
+                return token_idf_vecs[token]
+            except:
+                return np.zeros(token_idf_vecs[list(token_idf_vecs.keys())[0]].shape)
+
+        cos_sims = []
+        for org_sent, tsf_sent in zip(original, transferred):
+            org_toks = org_sent.split(' ')
+            tsf_toks = tsf_sent.split(' ')
+            org_vecs = np.asarray([get_vec(token) for token in org_toks])
+            tsf_vecs = np.asarray([get_vec(token) for token in tsf_toks])
+            org_vec = np.sum(org_vecs, axis=0)
+            tsf_vec = np.sum(tsf_vecs, axis=0)
+            cos_sim = 1 - cosine(org_vec, tsf_vec)
+            cos_sims.append(cos_sim)
+
+        return np.mean(cos_sims)
 
     def eval_back(self, lang1, lang2, lang3, data_type, scores):
         """
@@ -385,9 +413,6 @@ def eval_moses_bleu(ref, hyp):
         logger.warning('Impossible to parse BLEU score! "%s"' % result)
         return -1
 
-
-def compute_sim():
-    pass
 
 
 def convert_to_text(batch, lengths, dico, params):
