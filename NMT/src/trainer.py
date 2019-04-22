@@ -103,10 +103,15 @@ class TrainerMT(MultiprocessingEventLoop):
         logger.info("Stopping criterion: %s" % params.stopping_criterion)
         if params.stopping_criterion == '':
             for data_type in ['dev', 'test']:
-                self.VALIDATION_METRICS.append('self-bleu_%s' % (data_type))
+                if data_type == 'dev' or not params.test_para:
+                    self.VALIDATION_METRICS.append('self-bleu_%s' % (data_type))
+                else:
+                    self.VALIDATION_METRICS.append('bleu_test_para')
+                self.VALIDATION_METRICS.append('sim_%s' % (data_type))
                 for attr_name in params.attr_names:
                     self.VALIDATION_METRICS.append('tsf_accuracy_%s_%s'
                             % (attr_name, data_type))
+
             self.stopping_criterion = None
             self.best_stopping_criterion = None
         else:
@@ -605,8 +610,8 @@ class TrainerMT(MultiprocessingEventLoop):
                                             soft_sent2.size(2)).cuda(),
                                 soft_sent2])
 
+        fake_reps = self.feat_extr(soft_sent2, len2, attr2, src_tokens=sent2, soft=True)
         real_reps = self.feat_extr(sent1, len1, attr1)
-        fake_reps = self.feat_extr(soft_sent2, len2, attr2, soft=True)
 
         # TODO: concat negative examples (i.e. (sent2, len2, attr1), (sent1, len1, attr2), etc.)
 
@@ -649,8 +654,8 @@ class TrainerMT(MultiprocessingEventLoop):
                                             soft_sent2.size(2)).cuda(),
                                 soft_sent2])
 
+        fake_reps = self.feat_extr(soft_sent2, len2, attr2, src_tokens=sent2, soft=True)
         real_reps = self.feat_extr(sent1, len1, attr1)
-        fake_reps = self.feat_extr(soft_sent2, len2, attr2, soft=True)
         
         loss = IPOT(real_reps, fake_reps)
         self.stats['ipot_adv_costs'].append(loss.item())

@@ -16,7 +16,7 @@ from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 from . import LatentState, LSTM_PARAMS, BILSTM_PARAMS
 from .discriminator import Discriminator
 from .lm import LM
-from .feature_extractor import ConvFeatureExtractor
+from .feature_extractor import ConvFeatureExtractor, TransformerFeatureExtractor
 from ..modules.label_smoothed_cross_entropy import LabelSmoothedCrossEntropyLoss
 from .pretrain_embeddings import initialize_embeddings
 from ..utils import get_mask, reload_model
@@ -776,7 +776,8 @@ def build_attention_model(params, data, cuda=True):
 
     if params.lambda_feat_extr not in ["0", "-1"]:
         logger.info("============ Building attention model - Feature extractor ...")
-        feat_extr = ConvFeatureExtractor(params, encoder)
+        #feat_extr = ConvFeatureExtractor(params, encoder)
+        feat_extr = TransformerFeatureExtractor(params, encoder)
         logger.info("")
     else:
         feat_extr = None

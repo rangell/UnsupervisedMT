@@ -5,7 +5,9 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 
+import math
 from IPython import embed
+from .transformer import TransformerEncoderLayer, PositionalEmbedding
 
 
 logger = getLogger()
@@ -26,7 +28,7 @@ class ConvFeatureExtractor(nn.Module):
                     (window_size, params.emb_dim)))
         self.conv_layers = nn.ModuleList(self.conv_layers)
 
-    def forward(self, sentence, length, attributes, soft=False):
+    def forward(self, sentence, length, attributes, src_tokens=None, soft=False):
         # embed style
         style_embed = self.style_embeddings(attributes)
         style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
@@ -56,8 +58,63 @@ class RecurrentFeatureExtractor(nn.Module):
 
 
 class TransformerFeatureExtractor(nn.Module):
-    pass
 
+    def __init__(self, params, encoder):
+        super().__init__()
+        self.embeddings = encoder.embeddings
+        self.style_embeddings = encoder.style_embeddings
+
+        self.dropout = params.dropout
+
+        embed_dim = params.encoder_embed_dim
+
+        self.padding_idx = params.pad_index
+        self.embed_scale = math.sqrt(embed_dim)
+        self.embed_positions = PositionalEmbedding(
+            1024, embed_dim, self.padding_idx,
+            left_pad=params.left_pad_source,
+        )
+
+        self.freeze_enc_emb = params.freeze_enc_emb
+
+        self.num_layers = 2
+
+        self.layers = nn.ModuleList()
+        for k in range(self.num_layers):
+            self.layers.append(TransformerEncoderLayer(params))
+
+    def forward(self, sentence, length, attributes, src_tokens=None, soft=False):
+
+        # NOTE: `src_attributes` are unused for now, will be used for style-specific word embeddings
+
+        # embed style
+        style_embed = self.style_embeddings(attributes)
+        style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
+        # embed src tokens and replace <BOS> w/ style_embed
+        if soft: # soft src tokens
+            src_embed = sentence
+        else:
+            src_tokens = sentence
+            src_embed = self.embeddings(sentence)
+        src_embed[0] = style_embed
+
+        # embed positions
+        x = self.embed_scale * src_embed
+        x = x.detach() if self.freeze_enc_emb else x
+        x = x + self.embed_positions(src_tokens)
+        x = F.dropout(x, p=self.dropout, training=self.training)
+
+        # compute padding mask
+        encoder_padding_mask = src_tokens.t().eq(self.padding_idx)
+
+        # encoder layers
+        for layer in self.layers:
+            x = layer(x, encoder_padding_mask)
+
+        # max-over-time
+        x = torch.max(x, 0)[0]
+
+        return x
 
 ###############################################################################
 
