@@ -114,6 +114,19 @@ def get_parser():
                         help="GAN smooth predictions")
     parser.add_argument("--dis_input_proj", type=bool_flag, default=True,
                         help="Feed the discriminator with the projected output (attention only)")
+    # feature extractor parameters
+    parser.add_argument("--transformer_feat_extr", type=bool_flag, default=False,
+                        help="Use transformer architecture for feature extractor")
+    parser.add_argument("--cnn_feat_extr", type=bool_flag, default=False,
+                        help="Use cnn architecture for feature extractor")
+    if parser.parse_known_args()[0].transformer_feat_extr:
+        parser.add_argument("--feat_extr_layers", type=int, default=2,
+                            help="Number of layers in transformer feature extractor")
+    elif parser.parse_known_args()[0].cnn_feat_extr:
+        parser.add_argument("--feat_extr_n_filters", type=int, default=128,
+                            help="Number of filters in cnn feature extractor")
+        parser.add_argument("--feat_extr_filter_sizes", type=str, default="2,3,4",
+                            help="Filter sizes used in cnn feature extractor (e.g. '2,3,4')")
 
     # dataset
     parser.add_argument("--data_dir", type=str, default="",

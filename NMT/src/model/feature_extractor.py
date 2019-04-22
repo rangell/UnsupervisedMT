@@ -20,12 +20,12 @@ class ConvFeatureExtractor(nn.Module):
         self.embeddings = encoder.embeddings
         self.style_embeddings = encoder.style_embeddings
 
-        num_filters = 256
-        window_sizes = [2, 3]
+        num_filters = params.feat_extr_n_filters
+        filter_sizes = params.filter_sizes
         self.conv_layers = []
-        for window_size in window_sizes:
+        for filter_size in filter_sizes:
             self.conv_layers.append(nn.Conv2d(1, num_filters,
-                    (window_size, params.emb_dim)))
+                    (filter_size, params.emb_dim)))
         self.conv_layers = nn.ModuleList(self.conv_layers)
 
     def forward(self, sentence, length, attributes, src_tokens=None, soft=False):
@@ -77,7 +77,7 @@ class TransformerFeatureExtractor(nn.Module):
 
         self.freeze_enc_emb = params.freeze_enc_emb
 
-        self.num_layers = 2
+        self.num_layers = params.feat_extr_layers
 
         self.layers = nn.ModuleList()
         for k in range(self.num_layers):

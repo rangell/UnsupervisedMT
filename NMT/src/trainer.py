@@ -581,12 +581,13 @@ class TrainerMT(MultiprocessingEventLoop):
 
     def feat_extr_step(self, batch, lambda_feat_extr):
         assert lambda_feat_extr > 0
-
-        if batch['len2'].min() < 3:
-            logger.warning("Missed adv step")
-            return
-
         params = self.params
+
+        if params.cnn_feat_extr:
+            if batch['len2'].max() < max(params.filter_sizes):
+                logger.warning("Missed adv step")
+                return
+
         self.encoder.eval()
         self.decoder.eval()
         self.feat_extr.train()
@@ -625,12 +626,13 @@ class TrainerMT(MultiprocessingEventLoop):
 
     def enc_dec_adv_step(self, batch, lambda_adv):
         assert lambda_adv > 0
-
-        if batch['len2'].min() < 3:
-            logger.warning("Missed adv step")
-            return
-
         params = self.params
+
+        if params.cnn_feat_extr:
+            if batch['len2'].max() < max(params.filter_sizes):
+                logger.warning("Missed adv step")
+                return
+
         self.encoder.train()
         self.decoder.train()
         self.feat_extr.eval()

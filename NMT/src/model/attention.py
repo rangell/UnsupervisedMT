@@ -775,12 +775,19 @@ def build_attention_model(params, data, cuda=True):
         discriminator = None
 
     if params.lambda_feat_extr not in ["0", "-1"]:
+        assert params.transformer_feat_extr or params.cnn_feat_extr
+        assert not (params.transformer_feat_extr and params.cnn_feat_extr)
         logger.info("============ Building attention model - Feature extractor ...")
-        #feat_extr = ConvFeatureExtractor(params, encoder)
-        feat_extr = TransformerFeatureExtractor(params, encoder)
+        if params.transformer_feat_extr:
+            feat_extr = TransformerFeatureExtractor(params, encoder)
+        else:
+            params.filter_sizes = [int(x) 
+                    for x in params.feat_extr_filter_sizes.split(',')]
+            feat_extr = ConvFeatureExtractor(params, encoder)
         logger.info("")
     else:
         feat_extr = None
+        assert not params.transformer_feat_extr and not params.cnn_feat_extr
 
     # loss function for decoder reconstruction
     loss_fn = []
