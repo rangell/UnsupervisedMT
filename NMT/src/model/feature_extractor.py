@@ -118,6 +118,29 @@ class TransformerFeatureExtractor(nn.Module):
 
 ###############################################################################
 
+def batched_IPOT(feature_vecs1, feature_vecs2, iterations=50, beta=1):
+    feature_vecs1 = torch.transpose(feature_vecs1, 0, 1)
+    feature_vecs2 = torch.transpose(feature_vecs2, 0, 1)
+    batch_size = feature_vecs1.shape[0]
+    n1, n2 = feature_vecs1.shape[1], feature_vecs2.shape[1]
+    assert feature_vecs1.shape[0] == feature_vecs2.shape[0]
+    sigma = (torch.ones((batch_size, n2, 1)) / n2).cuda()
+    T = torch.ones((batch_size, n1, n2)).cuda()
+    C = cost_matrix(feature_vecs1, feature_vecs2)
+    A = torch.exp(-C / beta)
+    
+    for _ in range(iterations):
+        Q = A * T
+        delta = 1 / (n1 * torch.matmul(Q, sigma))
+        sigma = 1 / (n2 * torch.matmul(torch.transpose(Q, 1, 2), delta))
+        T = torch.matmul(torch.diag_embed(delta.squeeze(), dim1=1, dim2=2), 
+                         torch.matmul(Q, torch.diag_embed(sigma.squeeze(),
+                                                          dim1=1, dim2=2)))
+    T = T.detach()
+
+    weighted_dists = torch.matmul(torch.transpose(C, 1, 2), T)
+    _ones = torch.diag_embed(torch.ones(batch_size, n1), dim1=1, dim2=2).cuda()
+    return torch.sum(weighted_dists * _ones)
 
 def IPOT(feature_vecs1, feature_vecs2, iterations=50, beta=1):
     n1, n2 = feature_vecs1.shape[0], feature_vecs2.shape[0]
@@ -138,9 +161,9 @@ def IPOT(feature_vecs1, feature_vecs2, iterations=50, beta=1):
 
 
 def cost_matrix(feature_vecs1, feature_vecs2):
-    feature_vecs1 = F.normalize(feature_vecs1, p=2, dim=1)
-    feature_vecs2 = F.normalize(feature_vecs2, p=2, dim=1)
+    feature_vecs1 = F.normalize(feature_vecs1, p=2, dim=-1)
+    feature_vecs2 = F.normalize(feature_vecs2, p=2, dim=-1)
     
-    cosine_similarity = torch.matmul(feature_vecs1, torch.transpose(feature_vecs2, 0, 1))
+    cosine_similarity = torch.matmul(feature_vecs1, torch.transpose(feature_vecs2, -1, -2))
     
     return (1 - cosine_similarity)

@@ -272,6 +272,8 @@ def main(params):
     trainer.test_sharing()  # check parameters sharing
 
     evaluator = EvaluatorMT(trainer, data, params)
+    evaluator.run_all_evals(0)
+    exit()
 
     # evaluation mode
     if params.eval_only:
@@ -323,12 +325,15 @@ def main(params):
             # auto-encoder training
             if params.lambda_xe_ae > 0:
                 n_batches += 1
-                trainer.enc_dec_ae_step(params.lambda_xe_ae)
+                trainer.enc_dec_ae_step(params.lambda_xe_ae,
+                                        params.lambda_ipot_ae)
 
             # back-translation training
             if params.lambda_xe_otf_bt > 0:
                 n_batches += 1
-                trainer.enc_dec_bt_step(st_batch, params.lambda_xe_otf_bt)
+                trainer.enc_dec_bt_step(st_batch,
+                                        params.lambda_xe_otf_bt,
+                                        params.lambda_ipot_otf_bt)
 
             # adversarial optimization of feature extractor
             if params.lambda_feat_extr > 0:

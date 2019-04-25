@@ -16,7 +16,7 @@ from torch.nn.utils import clip_grad_norm_
 from .utils import reverse_sentences, clip_parameters, sample_style
 from .utils import get_optimizer, parse_lambda_config, update_lambdas
 from .model import build_mt_model
-from .model.feature_extractor import IPOT
+from .model.feature_extractor import IPOT, batched_IPOT
 from .multiprocessing_event_loop import MultiprocessingEventLoop
 from .test import test_sharing
 
@@ -142,6 +142,8 @@ class TrainerMT(MultiprocessingEventLoop):
             'xe_bt_costs': [],
             'ppl_ae_costs': [],
             'ppl_bt_costs': [],
+            'ipot_ae_costs': [],
+            'ipot_bt_costs': [],
             'ipot_fe_costs': [],
             'ipot_adv_costs': [],
             'lme_costs': [],
@@ -474,7 +476,7 @@ class TrainerMT(MultiprocessingEventLoop):
                  ('sent2', sent2), ('len2', len2), ('attr2', attr2),
             ])
     
-    def enc_dec_ae_step(self, lambda_xe):
+    def enc_dec_ae_step(self, lambda_xe, lambda_ipot):
         # essentially enc_dec_step(...) called in AE mode
         params = self.params
         loss_fn = self.decoder.loss_fn[0]
@@ -502,8 +504,16 @@ class TrainerMT(MultiprocessingEventLoop):
         scores = self.decoder(encoded, sent_[:-1], attr_)
         xe_loss = loss_fn(scores.view(-1, n_words), sent_[1:].view(-1))
 
+        # IPOT
+        smooth_scores = self.decoder.smooth(scores)
+        soft_sent_ = torch.matmul(smooth_scores, self.decoder.embeddings.weight)
+        sent_embed_ = self.encoder.embeddings(sent_[1:])
+        sent_embed_ = sent_embed_.detach()
+        ipot_loss = batched_IPOT(soft_sent_, sent_embed_)
+
         self.stats['xe_ae_costs'].append(xe_loss.item())
         self.stats['ppl_ae_costs'].append(torch.exp(xe_loss).item())
+        self.stats['ipot_ae_costs'].append(ipot_loss.item())
 
         # discriminator feedback loss
         if params.lambda_dis:
@@ -516,6 +526,8 @@ class TrainerMT(MultiprocessingEventLoop):
         # total loss
         assert lambda_xe > 0
         loss = lambda_xe * xe_loss
+        if lambda_ipot > 0:
+            loss = loss + lambda_ipot * ipot_loss
         if params.lambda_dis:
             loss = loss + params.lambda_dis * dis_loss
 
@@ -533,7 +545,7 @@ class TrainerMT(MultiprocessingEventLoop):
         self.stats['processed_s'] += len_.size(0)
         self.stats['processed_w'] += len_.sum()
 
-    def enc_dec_bt_step(self, batch, lambda_xe):
+    def enc_dec_bt_step(self, batch, lambda_xe, lambda_ipot):
         # essentially otf_bt(...) called in AE mode (yes AE mode, not a typo)
         params = self.params
         loss_fn = self.decoder.loss_fn[0]
@@ -554,10 +566,22 @@ class TrainerMT(MultiprocessingEventLoop):
         # cross-entropy scores / loss
         scores = self.decoder(encoded, sent1[:-1], attr1)
         xe_loss = loss_fn(scores.view(-1, params.n_words), sent1[1:].view(-1))
+
+        # IPOT
+        smooth_scores = self.decoder.smooth(scores)
+        soft_sent_ = torch.matmul(smooth_scores, self.decoder.embeddings.weight)
+        sent_embed_ = self.encoder.embeddings(sent1[1:])
+        sent_embed_ = sent_embed_.detach()
+        ipot_loss = batched_IPOT(soft_sent_, sent_embed_)
+
         self.stats['xe_bt_costs'].append(xe_loss.item())
         self.stats['ppl_bt_costs'].append(torch.exp(xe_loss).item())
+        self.stats['ipot_bt_costs'].append(ipot_loss.item())
+
         assert lambda_xe > 0
         loss = lambda_xe * xe_loss
+        if lambda_ipot > 0:
+            loss = loss + lambda_ipot * ipot_loss
 
         # check NaN
         if (loss != loss).data.any():
@@ -584,7 +608,8 @@ class TrainerMT(MultiprocessingEventLoop):
         params = self.params
 
         if params.cnn_feat_extr:
-            if batch['len2'].max() < max(params.filter_sizes):
+            if (batch['len2'].max() < max(params.filter_sizes)
+                    or batch['len1'].max() < max(params.filter_sizes)):
                 logger.warning("Missed adv step")
                 return
 
@@ -629,7 +654,8 @@ class TrainerMT(MultiprocessingEventLoop):
         params = self.params
 
         if params.cnn_feat_extr:
-            if batch['len2'].max() < max(params.filter_sizes):
+            if (batch['len2'].max() < max(params.filter_sizes)
+                    or batch['len1'].max() < max(params.filter_sizes)):
                 logger.warning("Missed adv step")
                 return
 
@@ -950,8 +976,10 @@ class TrainerMT(MultiprocessingEventLoop):
                 ('XE-BT', 'xe_bt_costs'),
                 ('PPL-AE', 'ppl_ae_costs'),
                 ('PPL-BT', 'ppl_bt_costs'),
-                ('IPOT-FE', 'ipot_fe_costs'),
-                ('IPOT-ADV', 'ipot_adv_costs'),
+                ('IPOT-AE', 'ipot_ae_costs'),   # word IPOT
+                ('IPOT-BT', 'ipot_bt_costs'),   # word IPOT
+                ('IPOT-FE', 'ipot_fe_costs'),   # sent feat extr IPOT
+                ('IPOT-ADV', 'ipot_adv_costs'), # sent feat extr IPOT
                 ('LME', 'lme_costs'),
                 ('LMD', 'lmd_costs'),
                 ('LMER', 'lmer_costs'),

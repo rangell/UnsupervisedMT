@@ -7,6 +7,7 @@
 
 import os
 import subprocess
+import random
 from collections import OrderedDict
 from logging import getLogger
 import numpy as np
@@ -14,10 +15,11 @@ import torch
 from torch import nn
 
 from .utils import restore_segmentation, sample_style
-import fastText
-import random
+from tqdm import tqdm
 
+import fastText
 from scipy.spatial.distance import cosine
+from nltk.translate.meteor_score import meteor_score
 
 from IPython import embed
 
@@ -268,6 +270,11 @@ class EvaluatorMT(object):
         logger.info("sim %s : %f " % (data_type, sim))
         scores['sim_%s' % (data_type)] = sim
 
+        # meteor score
+        met = self.compute_met(txt_list1, txt_list2)
+        logger.info("met %s : %f " % (data_type, met))
+        scores['met_%s' % (data_type)] = met
+
         if data_type == 'test' and params.test_para:
             data_type = 'test_para'
                 
@@ -314,6 +321,12 @@ class EvaluatorMT(object):
             cos_sims.append(cos_sim)
 
         return np.mean(cos_sims)
+
+    def compute_met(self, original, transferred):
+        met_scores = []
+        for org_sent, tsf_sent in zip(original, transferred):
+            met_scores.append(meteor_score(org_sent, tsf_sent))
+        return np.mean(met_scores)
 
     def eval_back(self, lang1, lang2, lang3, data_type, scores):
         """
