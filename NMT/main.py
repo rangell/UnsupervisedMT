@@ -155,6 +155,8 @@ def get_parser():
                         help="Metadata filename")
     parser.add_argument("--idf_vecs_filename", type=str, default="",
                         help="For evaluating semantic similarity")
+    parser.add_argument("--lang_model_filename", type=str, default="",
+                        help="Filename storing pre-trained language model")
 
     # training steps
     parser.add_argument("--n_dis", type=int, default=0,

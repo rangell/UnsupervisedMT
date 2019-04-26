@@ -413,6 +413,8 @@ def load_st_data(params):
         attribute_path = ".".join([prefix, params.attribute_suffix])
         attribute_data = load_attributes(attribute_path, params)
 
+        
+
         dataset = UnpairedStyleDataset(text_data['sentences'], text_data['positions'],
                                text_data['dico'], attribute_data, params)
 
@@ -473,7 +475,9 @@ def check_all_data_params(params):
 
     # check idf vectors for semantic similarity
     assert os.path.isfile(params.idf_vecs_filename)
-    params.token_idf_vecs = pickle.load(open(params.idf_vecs_filename, 'rb'))
+
+    # check pre-trained language model
+    assert os.path.isfile(params.lang_model_filename)
 
     # check styles
     assert os.path.isfile(params.metadata_filename)

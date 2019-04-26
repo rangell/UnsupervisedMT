@@ -8,6 +8,7 @@
 import os
 import subprocess
 import random
+import pickle
 from collections import OrderedDict
 from logging import getLogger
 import numpy as np
@@ -44,11 +45,21 @@ class EvaluatorMT(object):
         self.dico = data['dico']
         self.params = params
 
+        # load necessary objects for evaluation
+        self._load_eval_params()
+
         # create reference files for BLEU evaluation
         self.create_reference_files()
 
         # load classfication models for computing style transfer accuracy
         self.load_classification_models()
+
+    def _load_eval_params(self):
+        params = self.params
+        self.token_idf_vecs = pickle.load(open(params.idf_vecs_filename, 'rb'))
+        #with open(params.lang_model_filename, 'rb') as f:
+        #    model = torch.load(f)
+        #    model.rnn.flatten_parameters() # speeds up forward pass
 
     def get_pair_for_mono(self, lang):
         """
@@ -301,7 +312,7 @@ class EvaluatorMT(object):
             scores['self-bleu_%s' % (data_type)] = bleu
 
     def compute_sim(self, original, transferred):
-        token_idf_vecs = self.params.token_idf_vecs
+        token_idf_vecs = self.token_idf_vecs
 
         def get_vec(token):
             try:
