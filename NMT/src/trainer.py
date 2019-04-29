@@ -103,11 +103,10 @@ class TrainerMT(MultiprocessingEventLoop):
         logger.info("Stopping criterion: %s" % params.stopping_criterion)
         if params.stopping_criterion == '':
             for data_type in ['dev', 'test']:
-                if data_type == 'dev' or not params.test_para:
-                    self.VALIDATION_METRICS.append('self-bleu_%s' % (data_type))
-                else:
-                    self.VALIDATION_METRICS.append('bleu_test_para')
                 self.VALIDATION_METRICS.append('sim_%s' % (data_type))
+                self.VALIDATION_METRICS.append('met_%s' % (data_type))
+                self.VALIDATION_METRICS.append('bleu_%s' % (data_type))
+                self.VALIDATION_METRICS.append('ppl_%s' % (data_type))
                 for attr_name in params.attr_names:
                     self.VALIDATION_METRICS.append('tsf_accuracy_%s_%s'
                             % (attr_name, data_type))
@@ -504,16 +503,16 @@ class TrainerMT(MultiprocessingEventLoop):
         scores = self.decoder(encoded, sent_[:-1], attr_)
         xe_loss = loss_fn(scores.view(-1, n_words), sent_[1:].view(-1))
 
-        # IPOT
-        smooth_scores = self.decoder.smooth(scores)
-        soft_sent_ = torch.matmul(smooth_scores, self.decoder.embeddings.weight)
-        sent_embed_ = self.encoder.embeddings(sent_[1:])
-        sent_embed_ = sent_embed_.detach()
-        ipot_loss = batched_IPOT(soft_sent_, sent_embed_)
+        ## IPOT
+        #smooth_scores = self.decoder.smooth(scores)
+        #soft_sent_ = torch.matmul(smooth_scores, self.decoder.embeddings.weight)
+        #sent_embed_ = self.encoder.embeddings(sent_[1:])
+        #sent_embed_ = sent_embed_.detach()
+        #ipot_loss = batched_IPOT(soft_sent_, sent_embed_)
 
         self.stats['xe_ae_costs'].append(xe_loss.item())
         self.stats['ppl_ae_costs'].append(torch.exp(xe_loss).item())
-        self.stats['ipot_ae_costs'].append(ipot_loss.item())
+        #self.stats['ipot_ae_costs'].append(ipot_loss.item())
 
         # discriminator feedback loss
         if params.lambda_dis:
@@ -526,8 +525,8 @@ class TrainerMT(MultiprocessingEventLoop):
         # total loss
         assert lambda_xe > 0
         loss = lambda_xe * xe_loss
-        if lambda_ipot > 0:
-            loss = loss + lambda_ipot * ipot_loss
+        #if lambda_ipot > 0:
+        #    loss = loss + lambda_ipot * ipot_loss
         if params.lambda_dis:
             loss = loss + params.lambda_dis * dis_loss
 
@@ -567,21 +566,21 @@ class TrainerMT(MultiprocessingEventLoop):
         scores = self.decoder(encoded, sent1[:-1], attr1)
         xe_loss = loss_fn(scores.view(-1, params.n_words), sent1[1:].view(-1))
 
-        # IPOT
-        smooth_scores = self.decoder.smooth(scores)
-        soft_sent_ = torch.matmul(smooth_scores, self.decoder.embeddings.weight)
-        sent_embed_ = self.encoder.embeddings(sent1[1:])
-        sent_embed_ = sent_embed_.detach()
-        ipot_loss = batched_IPOT(soft_sent_, sent_embed_)
+        ## IPOT
+        #smooth_scores = self.decoder.smooth(scores)
+        #soft_sent_ = torch.matmul(smooth_scores, self.decoder.embeddings.weight)
+        #sent_embed_ = self.encoder.embeddings(sent1[1:])
+        #sent_embed_ = sent_embed_.detach()
+        #ipot_loss = batched_IPOT(soft_sent_, sent_embed_)
 
         self.stats['xe_bt_costs'].append(xe_loss.item())
         self.stats['ppl_bt_costs'].append(torch.exp(xe_loss).item())
-        self.stats['ipot_bt_costs'].append(ipot_loss.item())
+        #self.stats['ipot_bt_costs'].append(ipot_loss.item())
 
         assert lambda_xe > 0
         loss = lambda_xe * xe_loss
-        if lambda_ipot > 0:
-            loss = loss + lambda_ipot * ipot_loss
+        #if lambda_ipot > 0:
+        #    loss = loss + lambda_ipot * ipot_loss
 
         # check NaN
         if (loss != loss).data.any():
@@ -1022,6 +1021,7 @@ class TrainerMT(MultiprocessingEventLoop):
             'dec': self.decoder,
             'dis': self.discriminator,
             'lm': self.lm,
+            'feat_extr': self.feat_extr,
         }, path)
 
     def save_checkpoint(self):
@@ -1033,10 +1033,12 @@ class TrainerMT(MultiprocessingEventLoop):
             'decoder': self.decoder,
             'discriminator': self.discriminator,
             'lm': self.lm,
+            'feat_extr': self.feat_extr,
             'enc_optimizer': self.enc_optimizer,
             'dec_optimizer': self.dec_optimizer,
             'dis_optimizer': self.dis_optimizer,
             'lm_optimizer': self.lm_optimizer,
+            'feat_extr_optimizer': self.feat_extr_optimizer,
             'epoch': self.epoch,
             'n_total_iter': self.n_total_iter,
             'best_metrics': self.best_metrics,
@@ -1060,10 +1062,12 @@ class TrainerMT(MultiprocessingEventLoop):
         self.decoder = checkpoint_data['decoder']
         self.discriminator = checkpoint_data['discriminator']
         self.lm = checkpoint_data['lm']
+        self.feat_extr = checkpoint_data['feat_extr']
         self.enc_optimizer = checkpoint_data['enc_optimizer']
         self.dec_optimizer = checkpoint_data['dec_optimizer']
         self.dis_optimizer = checkpoint_data['dis_optimizer']
         self.lm_optimizer = checkpoint_data['lm_optimizer']
+        self.feat_extr_optimizer = checkpoint_data['feat_extr_optimizer']
         self.epoch = checkpoint_data['epoch']
         self.n_total_iter = checkpoint_data['n_total_iter']
         self.best_metrics = checkpoint_data['best_metrics']
@@ -1073,6 +1077,7 @@ class TrainerMT(MultiprocessingEventLoop):
             'dec': (self.decoder, self.dec_optimizer),
             'dis': (self.discriminator, self.dis_optimizer),
             'lm': (self.lm, self.lm_optimizer),
+            'feat_extr': (self.feat_extr, self.feat_extr_optimizer),
         }
         logger.warning('Checkpoint reloaded. Resuming at epoch %i ...' % self.epoch)
 

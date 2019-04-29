@@ -274,8 +274,6 @@ def main(params):
     trainer.test_sharing()  # check parameters sharing
 
     evaluator = EvaluatorMT(trainer, data, params)
-    evaluator.run_all_evals(0)
-    exit()
 
     # evaluation mode
     if params.eval_only:

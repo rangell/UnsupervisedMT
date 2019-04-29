@@ -64,13 +64,13 @@ class TransformerEncoder(nn.Module):
 
         embed_tokens = self.embeddings # Making transition to style-specific word embeddings easier
 
-        # embed style
-        style_embed = self.style_embeddings(src_attributes)
-        style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
+        ## embed style
+        #style_embed = self.style_embeddings(src_attributes)
+        #style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
 
         # embed src tokens and replace <BOS> w/ style_embed
         src_embed = embed_tokens(src_tokens)
-        src_embed[0] = style_embed
+        #src_embed[0] = style_embed
 
         # embed positions
         x = self.embed_scale * src_embed

@@ -395,7 +395,7 @@ def load_st_data(params):
 
     _prefixes = [params.train_prefix, params.dev_prefix, params.test_prefix]
     _names = ['train', 'dev', 'test']
-    if params.test_para_prefix != '':
+    if params.test_para:
         _prefixes.append(params.test_para_prefix)
         _names.append('test_para')
 
@@ -412,8 +412,6 @@ def load_st_data(params):
 
         attribute_path = ".".join([prefix, params.attribute_suffix])
         attribute_data = load_attributes(attribute_path, params)
-
-        
 
         dataset = UnpairedStyleDataset(text_data['sentences'], text_data['positions'],
                                text_data['dico'], attribute_data, params)
@@ -453,10 +451,6 @@ def check_all_data_params(params):
         params.test_para_prefix = "/".join([params.data_dir,
                                             params.test_para_prefix])
         prefixes.append(params.test_para_prefix)
-
-    #print("Inside check_all_data_params")
-    #embed()
-    #exit()
 
     # make sure dataset files exist
     for suffix in [params.text_suffix, params.attribute_suffix]:
