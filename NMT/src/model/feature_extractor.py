@@ -96,7 +96,7 @@ class TransformerFeatureExtractor(nn.Module):
         else:
             src_tokens = sentence
             src_embed = self.embeddings(sentence)
-        src_embed[0] = style_embed
+        #src_embed[0] = style_embed
 
         # embed positions
         x = self.embed_scale * src_embed

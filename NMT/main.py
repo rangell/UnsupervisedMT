@@ -44,6 +44,8 @@ def get_parser():
                         help="Hidden layer size")
     parser.add_argument("--window_width", type=int, default=5,
                         help="Max-pool stride and window width on top of encoder outputs")
+    parser.add_argument("--style_embed_enc", type=bool_flag, default=True,
+                        help="Use style embeddings as first token to encoder")
     parser.add_argument("--lstm_proj", type=bool_flag, default=False,
                         help="Projection layer between decoder LSTM and output layer")
     parser.add_argument("--dropout", type=float, default=0,
@@ -275,6 +277,20 @@ def main(params):
 
     evaluator = EvaluatorMT(trainer, data, params)
 
+    #### EXTERNAL EVALUATION ###
+    #dataset_dir = "/mnt/nfs/scratch1/rangell/st_data/sentiment_original/"
+    ##_ref_prefix = dataset_dir + "/processed/sentiment.test.org"
+    #_ref_prefix = dataset_dir + "/other_generators/sentiment.test.human"
+    #_hyp_prefix = dataset_dir + "/other_generators/sentiment.test.orgin"
+    #ref_txt_filename = ".".join([_ref_prefix, 'txt'])
+    #ref_attr_filename = ".".join([_ref_prefix, params.attribute_suffix])
+    #hyp_txt_filename = ".".join([_hyp_prefix, 'txt'])
+    ##hyp_txt_filename =  "/mnt/nfs/scratch1/rangell/st_output/test/4928321/hyp157.test.txt"
+    #hyp_attr_filename = ".".join([_hyp_prefix, params.attribute_suffix])
+    #evaluator.run_external_eval(ref_txt_filename, ref_attr_filename,
+    #                            hyp_txt_filename, hyp_attr_filename)
+    #exit()
+
     # evaluation mode
     if params.eval_only:
         evaluator.run_all_evals(0)
@@ -304,19 +320,6 @@ def main(params):
         while trainer.n_sentences < params.epoch_size:
             n_batches = 0
 
-            # discriminator training
-            if params.n_dis > 0:
-                raise NotImplementedError()
-            for _ in range(params.n_dis):
-                trainer.discriminator_step()
-
-            # language model training
-            if params.lambda_lm > 0:
-                raise NotImplementedError()
-                for _ in range(params.lm_after):
-                    for lang in params.langs:
-                        trainer.lm_step(lang)
-
             # generate on-the-fly batch
             before_gen = time.time()
             st_batch = trainer.gen_st_batch()
@@ -324,27 +327,24 @@ def main(params):
 
             # auto-encoder training
             if params.lambda_xe_ae > 0:
-                n_batches += 1
                 trainer.enc_dec_ae_step(params.lambda_xe_ae,
                                         params.lambda_ipot_ae)
 
             # back-translation training
             if params.lambda_xe_otf_bt > 0:
-                n_batches += 1
                 trainer.enc_dec_bt_step(st_batch,
                                         params.lambda_xe_otf_bt,
                                         params.lambda_ipot_otf_bt)
 
             # adversarial optimization of feature extractor
             if params.lambda_feat_extr > 0:
-                n_batches += 1
                 trainer.feat_extr_step(st_batch, params.lambda_feat_extr)
 
             # adversarial optimization of generator
             if params.lambda_adv > 0:
-                n_batches += 1
                 trainer.enc_dec_adv_step(st_batch, params.lambda_adv)
 
+            n_batches += 1
             trainer.iter(n_batches)
 
         # end of epoch

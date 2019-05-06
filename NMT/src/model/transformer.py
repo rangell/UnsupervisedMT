@@ -39,6 +39,7 @@ class TransformerEncoder(nn.Module):
         assert type(args.n_words) == int
         self.n_words = args.n_words
         self.n_styles = args.n_styles
+        self.style_embed_enc = args.style_embed_enc
         embed_dim = args.encoder_embed_dim
         self.embeddings = Embedding(self.n_words, embed_dim,
                                     padding_idx=args.pad_index)
@@ -64,13 +65,14 @@ class TransformerEncoder(nn.Module):
 
         embed_tokens = self.embeddings # Making transition to style-specific word embeddings easier
 
-        ## embed style
-        #style_embed = self.style_embeddings(src_attributes)
-        #style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
-
         # embed src tokens and replace <BOS> w/ style_embed
         src_embed = embed_tokens(src_tokens)
-        #src_embed[0] = style_embed
+
+        # embed style
+        if self.style_embed_enc:
+            style_embed = self.style_embeddings(src_attributes)
+            style_embed = torch.mean(torch.transpose(style_embed, 0, 1), 0)
+            src_embed[0] = style_embed
 
         # embed positions
         x = self.embed_scale * src_embed

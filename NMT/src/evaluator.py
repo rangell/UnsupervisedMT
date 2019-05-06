@@ -113,13 +113,16 @@ class EvaluatorMT(object):
             ref_attr.extend([list(x) for x in attr1.cpu().numpy()])
             hyp_attr.extend([list(x) for x in attr2_.cpu().numpy()])
 
+        # restore from bpe
+        ref_txt = [s.replace('@@ ', '') for s in ref_txt]
+        hyp_txt = [s.replace('@@ ', '') for s in hyp_txt]
+
         # export sentences to hypothesis file / restore bpe segmentation (shouldn't be one)
         hyp_name = 'hyp{0}.{1}.txt'.format(scores['epoch'], data_type)
         hyp_path = os.path.join(params.dump_path, hyp_name)
 
         with open(hyp_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(hyp_txt) + '\n')
-        restore_segmentation(hyp_path)
 
         return ref_txt, ref_attr, hyp_txt, hyp_attr
 
@@ -183,7 +186,8 @@ class EvaluatorMT(object):
         scores['met_%s' % (data_type)] = met
 
         # bleu score
-        bleu = corpus_bleu(ref_txt, hyp_txt)
+        bleu = corpus_bleu([[s.split()] for s in ref_txt], [s.split() for s in hyp_txt])
+        bleu *= 100
         logger.info("bleu_%s : %f " % (data_type, bleu))
         scores['bleu_%s' % (data_type)] = bleu
 
@@ -220,8 +224,12 @@ class EvaluatorMT(object):
             met_scores.append(meteor_score(org_sent, tsf_sent))
         return np.mean(met_scores)
 
-    def load_txt_and_attr_from_file(self, path_prefix):
-        pass
+    def load_file_into_list(self, filename):
+        lines = []
+        with open(filename, 'r') as f:
+            for line in f:
+                lines.append(line.strip())
+        return lines
 
     def load_txt_and_attr_from_iterator(self, data_type):
         params = self.params
@@ -238,6 +246,26 @@ class EvaluatorMT(object):
             attr.extend([list(x) for x in attr_.cpu().numpy()])
 
         return txt, attr
+
+    def run_external_eval(self, ref_txt_filename, ref_attr_filename,
+                          hyp_txt_filename, hyp_attr_filename):
+        params = self.params
+        scores = OrderedDict({'epoch': -1})
+        data_type = 'test'
+
+
+        ref_txt = self.load_file_into_list(ref_txt_filename)
+        ref_attr = [[params.style2id[x]]
+                        for x in self.load_file_into_list(ref_attr_filename)]
+        hyp_txt = self.load_file_into_list(hyp_txt_filename)
+        hyp_attr = [[params.style2id[x]]
+                        for x in self.load_file_into_list(hyp_attr_filename)]
+
+        self.eval_style_transfer(data_type, ref_txt, ref_attr,
+                                 hyp_txt, hyp_attr, scores)
+
+        #bleu = eval_moses_bleu(ref_txt_filename, hyp_txt_filename)
+        #logger.info("BLEU : %f" % (bleu))
 
     def run_all_evals(self, epoch):
         """
@@ -261,6 +289,21 @@ class EvaluatorMT(object):
                                              hyp_txt, hyp_attr, scores)
 
         return scores
+
+def eval_moses_bleu(ref, hyp):
+    """
+    Given a file of hypothesis and reference files,
+    evaluate the BLEU score using Moses scripts.
+    """
+    assert os.path.isfile(ref) and os.path.isfile(hyp)
+    command = BLEU_SCRIPT_PATH + ' %s < %s'
+    p = subprocess.Popen(command % (ref, hyp), stdout=subprocess.PIPE, shell=True)
+    result = p.communicate()[0].decode("utf-8")
+    if result.startswith('BLEU'):
+        return float(result[7:result.index(',')])
+    else:
+        logger.warning('Impossible to parse BLEU score! "%s"' % result)
+        return -1
 
 def convert_to_text(batch, lengths, dico, params):
     """
