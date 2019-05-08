@@ -13,6 +13,7 @@ from collections import OrderedDict
 from logging import getLogger
 import math
 import numpy as np
+import spacy
 import torch
 from torch import nn
 
@@ -180,10 +181,10 @@ class EvaluatorMT(object):
         logger.info("sim_%s : %f " % (data_type, sim))
         scores['sim_%s' % (data_type)] = sim
 
-        # meteor score
-        met = self.compute_met(ref_txt, hyp_txt)
-        logger.info("met_%s : %f " % (data_type, met))
-        scores['met_%s' % (data_type)] = met
+        ## meteor score
+        #met = self.compute_met(ref_txt, hyp_txt)
+        #logger.info("met_%s : %f " % (data_type, met))
+        #scores['met_%s' % (data_type)] = met
 
         # bleu score
         bleu = corpus_bleu([[s.split()] for s in ref_txt], [s.split() for s in hyp_txt])
@@ -191,8 +192,14 @@ class EvaluatorMT(object):
         logger.info("bleu_%s : %f " % (data_type, bleu))
         scores['bleu_%s' % (data_type)] = bleu
 
-        # pre-trained perplexity
-        ppl = math.exp(self.lang_model.evaluate(hyp_txt))
+        ## pre-trained perplexity
+        #ppl = math.exp(self.lang_model.evaluate(hyp_txt))
+        spacy_lm = spacy.load('en_core_web_lg')
+        perplexities = []
+        for sent in hyp_txt:
+            tokens = spacy_lm(sent)
+            perplexities.append(math.pow(2, -np.mean([t.prob for t in tokens])))
+        ppl = np.mean(perplexities)
         logger.info("ppl_%s : %f " % (data_type, ppl))
         scores['ppl_%s' % (data_type)] = ppl
 

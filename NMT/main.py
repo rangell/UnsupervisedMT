@@ -277,19 +277,20 @@ def main(params):
 
     evaluator = EvaluatorMT(trainer, data, params)
 
-    #### EXTERNAL EVALUATION ###
-    #dataset_dir = "/mnt/nfs/scratch1/rangell/st_data/sentiment_original/"
-    ##_ref_prefix = dataset_dir + "/processed/sentiment.test.org"
+    ### EXTERNAL EVALUATION ###
+    dataset_dir = "/mnt/nfs/scratch1/rangell/st_data/sentiment_original/"
+    _ref_prefix = dataset_dir + "/processed/sentiment.test.org"
     #_ref_prefix = dataset_dir + "/other_generators/sentiment.test.human"
-    #_hyp_prefix = dataset_dir + "/other_generators/sentiment.test.orgin"
-    #ref_txt_filename = ".".join([_ref_prefix, 'txt'])
-    #ref_attr_filename = ".".join([_ref_prefix, params.attribute_suffix])
+    _hyp_prefix = dataset_dir + "/other_generators/sentiment.test.human"
+    #_hyp_prefix = dataset_dir + "/processed/sentiment.test.org"
+    ref_txt_filename = ".".join([_ref_prefix, 'txt'])
+    ref_attr_filename = ".".join([_ref_prefix, params.attribute_suffix])
     #hyp_txt_filename = ".".join([_hyp_prefix, 'txt'])
-    ##hyp_txt_filename =  "/mnt/nfs/scratch1/rangell/st_output/test/4928321/hyp157.test.txt"
-    #hyp_attr_filename = ".".join([_hyp_prefix, params.attribute_suffix])
-    #evaluator.run_external_eval(ref_txt_filename, ref_attr_filename,
-    #                            hyp_txt_filename, hyp_attr_filename)
-    #exit()
+    hyp_txt_filename =  "/mnt/nfs/scratch1/rangell/st_output/grid_search/4952713/hyp94.test.txt"
+    hyp_attr_filename = ".".join([_hyp_prefix, params.attribute_suffix])
+    evaluator.run_external_eval(ref_txt_filename, ref_attr_filename,
+                                hyp_txt_filename, hyp_attr_filename)
+    exit()
 
     # evaluation mode
     if params.eval_only:
